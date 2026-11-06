@@ -1,0 +1,448 @@
+/* app.js — UI for the SolarFlow prototype. No build step; open index.html or serve the folder. */
+(function () {
+  const M = MODEL, D = DATA;
+  const $ = (s, el) => (el || document).querySelector(s);
+  const peso = n => (n < 0 ? '−₱' : '₱') + Math.round(Math.abs(n)).toLocaleString('en-PH');
+  const signed = n => (n > 0 ? '+' : n < 0 ? '−' : '') + '₱' + Math.round(Math.abs(n)).toLocaleString('en-PH');
+  const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const pct = n => Math.round(n * 100) + '%';
+  const med = a => { const s = a.slice().sort((x, y) => x - y), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+  const mean = a => a.reduce((x, y) => x + y, 0) / (a.length || 1);
+
+  const ROLES = { customer: 'Customer', staff: 'Intake / permit staff', engineer: 'Site engineer', manager: 'Manager', qa: 'QA', technician: 'Technician (R. Dizon)', management: 'Management / admin' };
+  const STAFF = ['staff', 'engineer', 'manager', 'qa', 'management'];
+  const ROUTES = {
+    estimator:  { label: 'Get an estimate', roles: ['customer'] },
+    myproject:  { label: 'My project', roles: ['customer'] },
+    insights:   { label: 'My bill insights', roles: ['customer'] },
+    pipeline:   { label: 'Project pipeline', roles: STAFF },
+    permits:    { label: 'Permit tracker', roles: ['staff', 'manager', 'management'] },
+    workorders: { label: 'Work orders', roles: ['technician', 'qa', 'manager'] },
+    analytics:  { label: 'Analytics', roles: ['engineer', 'manager', 'management'] },
+    spec:       { label: 'Analytics spec', roles: STAFF },
+    users:      { label: 'Users & roles', roles: ['management'] }
+  };
+  const GATES = {
+    1: { need: ['engineer', 'staff'], label: 'Engineer completes site assessment, staff verify the data' },
+    2: { need: ['engineer', 'manager'], label: 'Engineer and manager approve the quotation' },
+    3: { need: ['staff'], label: 'Staff release the quotation; the customer then accepts' }
+  };
+  const KEY = 'solarflow_v3';
+  let S = load(), UI = { tab: {}, est: null, insProject: null, rainy: false };
+
+  function load() { try { const s = JSON.parse(localStorage.getItem(KEY)); if (s && s.projects) return s; } catch (e) {} return fresh(); }
+  function fresh() { return { role: 'customer', projects: D.seedProjects(), myProject: 'P-1004', seq: 1010 }; }
+  function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} }
+  const P = id => S.projects.find(p => p.id === id);
+  function toast(m) { const t = $('#toast'); t.textContent = m; t.classList.add('show'); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('show'), 2400); }
+  function log(p, text, who) { p.log.push({ t: text, who: who || ROLES[S.role].split(' (')[0] }); }
+
+  // ---------- charts ----------
+  function hbars(items, o) {
+    o = o || {}; const mx = o.max || Math.max.apply(null, items.map(i => Math.abs(i.v))) || 1;
+    return items.map(i => `<div class="hbar"><span>${esc(i.l)}</span><div class="bar"><i style="width:${Math.min(100, Math.abs(i.v) / mx * 100)}%;background:${i.c || 'var(--deep)'}"></i></div><span class="right">${i.t != null ? i.t : (o.fmt || (x => x))(i.v)}</span></div>`).join('');
+  }
+  function monthChart(s) {
+    const W = 700, H = 230, l = 48, b = 28, t = 12, r = 8, mx = Math.max.apply(null, s.map(x => Math.max(x.actual, x.promised))) * 1.15;
+    const bw = (W - l - r) / s.length, y = v => t + (H - t - b) * (1 - v / mx);
+    let g = '';
+    for (let i = 0; i <= 4; i++) { const v = mx * i / 4; g += `<line x1="${l}" x2="${W - r}" y1="${y(v)}" y2="${y(v)}" stroke="#eee"/><text x="${l - 6}" y="${y(v) + 4}" text-anchor="end">${Math.round(v / 100) / 10}k</text>`; }
+    s.forEach((x, i) => { const bx = l + i * bw + bw * 0.2; g += `<rect x="${bx}" y="${y(x.actual)}" width="${bw * 0.6}" height="${H - b - y(x.actual)}" rx="3" fill="${x.nm ? '#14304a' : '#d9826f'}"><title>${x.m}: actual ${peso(x.actual)}</title></rect><text x="${bx + bw * 0.3}" y="${H - 10}" text-anchor="middle">${x.m}</text>`; });
+    g += `<line x1="${l}" x2="${W - r}" y1="${y(s[0].promised)}" y2="${y(s[0].promised)}" stroke="#f2a900" stroke-width="2.5" stroke-dasharray="6 4"/>`;
+    return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Monthly bill promised versus actual">${g}</svg>
+      <div class="legend"><span><i style="background:#f2a900"></i>Promised bill (estimate)</span><span><i style="background:#d9826f"></i>Actual — net metering not yet approved</span><span><i style="background:#14304a"></i>Actual — net metering approved</span></div>`;
+  }
+  function hourChart(h) {
+    const W = 700, H = 230, l = 44, b = 22, t = 10, r = 8, sh = 60;
+    const mx = Math.max.apply(null, h.load.concat(h.gen)) * 1.15 || 1, bw = (W - l - r) / 24, y = v => t + (H - t - b) * (1 - v / mx);
+    let g = '';
+    for (let i = 0; i <= 3; i++) { const v = mx * i / 3; g += `<line x1="${l}" x2="${W - r}" y1="${y(v)}" y2="${y(v)}" stroke="#eee"/><text x="${l - 6}" y="${y(v) + 4}" text-anchor="end">${v.toFixed(1)}</text>`; }
+    g += `<text x="4" y="12">kWh/h</text>`;
+    h.grid.forEach((v, i) => { if (v > 0.001) g += `<rect x="${l + i * bw + 2}" y="${y(v)}" width="${bw - 4}" height="${H - b - y(v)}" fill="#d1495b" opacity=".75"><title>${i}:00 grid draw ${v.toFixed(2)} kWh</title></rect>`; });
+    const pathG = h.gen.map((v, i) => (i ? 'L' : 'M') + (l + (i + 0.5) * bw) + ' ' + y(v)).join(' ');
+    g += `<path d="${pathG} L${l + 23.5 * bw} ${H - b} L${l + 0.5 * bw} ${H - b} Z" fill="#f2a900" opacity=".35"/><path d="${pathG}" fill="none" stroke="#c98900" stroke-width="2"/>`;
+    g += `<path d="${h.load.map((v, i) => (i ? 'L' : 'M') + (l + (i + 0.5) * bw) + ' ' + y(v)).join(' ')}" fill="none" stroke="#14304a" stroke-width="2.5"/>`;
+    for (let i = 0; i < 24; i += 3) g += `<text x="${l + (i + 0.5) * bw}" y="${H - 6}" text-anchor="middle">${i}:00</text>`;
+    const H2 = sh + 20, cap = h.cap || 1, y2 = v => 8 + (sh - 8) * (1 - v / cap);
+    let g2 = `<text x="4" y="12">Battery</text><text x="${l - 6}" y="${y2(cap) + 4}" text-anchor="end">100%</text><text x="${l - 6}" y="${y2(0) + 4}" text-anchor="end">0%</text>`;
+    if (h.cap > 0) g2 += `<path d="${h.soc.map((v, i) => (i ? 'L' : 'M') + (l + (i + 0.5) * bw) + ' ' + y2(v)).join(' ')} L${l + 23.5 * bw} ${y2(0)} L${l + 0.5 * bw} ${y2(0)} Z" fill="#3b82c4" opacity=".4"/>`; else g2 += `<text x="${l + 10}" y="40">No battery in this design</text>`;
+    return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Hourly load, solar and grid draw">${g}</svg><svg viewBox="0 0 ${W} ${H2}" width="100%">${g2}</svg>
+      <div class="legend"><span><i style="background:#14304a"></i>Household load</span><span><i style="background:#f2a900"></i>Solar output</span><span><i style="background:#d1495b"></i>Drawn from grid</span><span><i style="background:#3b82c4"></i>Battery charge</span></div>`;
+  }
+
+  // ---------- shared pieces ----------
+  const sim = '<span class="sim">simulated data</span>';
+  const DRV = { weather: { l: 'Weather / season', c: '#3b82c4' }, load: { l: 'Higher household load', c: '#8b6bc9' }, nm: { l: 'Net metering not yet approved', c: '#f2a900' } };
+  function pills(p) {
+    const L = ['1 Intake & site', '2 Quotation', '3 Release & accept', '4 Permits', '5 Installation', '6 After-sales'];
+    return '<div class="pills">' + L.map((l, i) => {
+      const n = i + 1; let c = '', x = '';
+      if (n <= 3) c = p.stage > n ? 'done' : p.stage === n ? 'now' : '';
+      else if (n === 4) { if (p.permit) { c = p.permit.approved ? 'done' : p.permit.submitted ? 'wait' : 'now'; if (c === 'wait') x = ' · awaiting utility'; } }
+      else if (n === 5) { if (p.install) c = p.install.qa ? 'done' : 'now'; }
+      else c = p.stage === 6 ? 'now' : '';
+      return `<span class="pill ${c}">${l}${x}</span>`;
+    }).join('') + '</div>';
+  }
+  function permitStats(p) { const it = p.permit ? p.permit.items : []; return { ok: it.filter(i => i.status === 'ok').length, miss: it.filter(i => i.status === 'missing'), pend: it.filter(i => i.status === 'pending'), total: it.length }; }
+  function flags(p) {
+    const f = [];
+    if (p.stage === 1 && Math.abs(p.appKwh - p.kwh) / p.kwh > 0.25) f.push({ k: '', t: `Conflict: appliance list implies about ${Math.round(p.appKwh)} kWh/month but the electric bill shows about ${Math.round(p.kwh)} kWh. Confirm usage during the site visit before sizing.` });
+    if (p.final && Math.abs(p.quoteDelta) > 0.1) f.push({ k: 'bad', t: `Final quotation differs from the indicative estimate by ${pct(p.quoteDelta)}. Record the reason and tell the customer before release (large gaps lower acceptance).` });
+    if (p.permit) {
+      const s = permitStats(p);
+      s.miss.forEach(i => f.push({ k: 'bad', t: `Missing requirement: ${i.n} (${i.track}, ${p.utility}).` }));
+      s.pend.forEach(i => f.push({ k: '', t: `Pending: ${i.n} has been waiting ${i.days} days.` }));
+      if (p.permit.submitted && !p.permit.approved) f.push({ k: 'info', t: 'Submitted. Approval is by the utility/LGU and outside this system; keep tracking the deadline.' });
+    }
+    if (p.install && !p.install.tech && !p.install.qa) f.push({ k: '', t: 'No technician assigned yet. See the suggestions below.' });
+    if (p.stage === 6) {
+      const s = D.series(p), last = s[s.length - 1], g = (last.actual - last.promised) / last.promised;
+      if (g > 0.2) { const top = Object.keys(last.parts).sort((a, b) => Math.abs(last.parts[b]) - Math.abs(last.parts[a]))[0]; f.push({ k: 'bad', t: `Variance warning: latest bill is ${pct(g)} above the promised bill. Largest driver: ${DRV[top].l.toLowerCase()} (${signed(last.parts[top])}).` }); }
+    }
+    return f;
+  }
+
+  // ---------- views ----------
+  // ---------- plan your system (guided, 4 steps) ----------
+  const kw1 = n => Math.round(n * 10) / 10;
+  const yrs = n => (!isFinite(n) || n > 40) ? '40+ yrs' : n.toFixed(1) + ' yrs';
+  const hr12 = h => (h % 12 === 0 ? 12 : h % 12) + (h < 12 ? ' am' : ' pm');
+  const Z = (E, cfg) => M.sizeCfg(E.tier, E.kwh, E.dayShare, E.rate, cfg);
+  const isChanged = E => E.cfg.panels !== E.tpl.panels || E.cfg.batt !== E.tpl.batt || E.cfg.mon !== E.tpl.mon;
+  function cfgNote(E) {
+    const t = E.tpl, c = E.cfg, ch = [];
+    if (c.panels !== t.panels) ch.push((c.panels > t.panels ? '+' : '−') + Math.abs(c.panels - t.panels) + ' panels');
+    if (c.batt !== t.batt) ch.push((c.batt > t.batt ? '+' : '−') + Math.abs(c.batt - t.batt) + ' kWh battery');
+    if (c.mon !== t.mon) ch.push(c.mon ? '+ monitoring' : '− monitoring');
+    return ' — roof type (customer\'s choice): ' + Scene.NAMES[c.roof] + (ch.length ? ' — customized: ' + ch.join(', ') : ' — template unchanged');
+  }
+
+  // live bill statement (stays beside every step; updated in place so the bars animate)
+  function statementHTML() {
+    const E = UI.est, cur = Z(E, E.cfg);
+    const row = (k, l, col) => `<div class="st-row"><div class="st-top"><span>${l}</span><b data-v="${k}"></b></div><div class="st-bar"><i data-w="${k}" style="background:${col}"></i></div></div>`;
+    return `<h3>Your monthly electric bill</h3>${row('today', 'Today', '#8794A1')}${row('pending', 'With solar, until net metering is approved', '#F5B700')}${row('approved', 'With solar, after net metering is approved', '#3FD0C9')}
+      <div class="st-tear"></div><div class="st-line"><span>System price</span><b data-v="cost"></b></div><div class="st-line"><span>Pays for itself in</span><b data-v="payback"></b></div>
+      <p class="st-note">Your bill will not reach ₱0. There is a minimum charge of about ${peso(M.FIXED)}, and evening use still comes from the grid.</p>`;
+  }
+  function updateStatement() {
+    const E = UI.est, el = $('#statement'); if (!el || !E.res) return; const cur = Z(E, E.cfg), v = { today: cur.baseBill, pending: cur.billNoNM, approved: cur.billNM };
+    Object.keys(v).forEach(k => { el.querySelector(`[data-v="${k}"]`).textContent = peso(v[k]); el.querySelector(`[data-w="${k}"]`).style.width = Math.max(2, Math.min(100, v[k] / cur.baseBill * 100)).toFixed(1) + '%'; });
+    el.querySelector('[data-v="cost"]').textContent = peso(cur.cost); el.querySelector('[data-v="payback"]').textContent = yrs(cur.paybackNM);
+  }
+
+  const capOf = E => Scene.CAPS[E.cfg.roof];
+  // the house scene: sun position follows the hour slider, panel and battery slots are clickable
+  function sceneHTML(E, cur) {
+    const c = E.cfg, h = M.hourly({ kwh: E.kwh, dayShare: E.dayShare, kw: cur.kw, batt: c.batt }, E.rainy ? 0.3 : 1), H = E.hour, d = h.soc[H] - h.soc[(H + 23) % 24];
+    return Scene.scene({ roof: c.roof, panels: c.panels, batt: c.batt / M.BATT_STEP, hour: H, pop: E.pop, gen: h.gen[H], charge: Math.max(0, d), dis: Math.max(0, -d), grid: h.grid[H], exp: h.exp[H] });
+  }
+  function updateScene() { const E = UI.est, el = $('#scenewrap'); if (el) el.innerHTML = sceneHTML(E, Z(E, E.cfg)); }
+  // one sunny or rainy day, hour by hour
+  function dayHTML(E, cur) {
+    const c = E.cfg, h = M.hourly({ kwh: E.kwh, dayShare: E.dayShare, kw: cur.kw, batt: c.batt }, E.rainy ? 0.3 : 1), H = E.hour;
+    const W = 640, Ht = 190, l = 34, r = 8, t = 8, b = 22, bw = (W - l - r) / 24, mx = (Math.max.apply(null, h.load.concat(h.gen, h.grid)) || 1) * 1.2;
+    const y = v => t + (Ht - t - b) * (1 - v / mx), x = i => l + (i + 0.5) * bw, base = y(0);
+    let g = ''; for (let i = 0; i <= 3; i++) { const v = mx * i / 3; g += `<line x1="${l}" x2="${W - r}" y1="${y(v)}" y2="${y(v)}" stroke="#E6EAEC"/><text x="${l - 6}" y="${y(v) + 4}" text-anchor="end">${v.toFixed(1)}</text>`; }
+        h.grid.forEach((v, i) => { if (v > 0.005) g += `<rect x="${l + i * bw + 2}" y="${y(v)}" width="${bw - 4}" height="${base - y(v)}" fill="#D9534F" opacity=".85"/>`; });
+    const line = a => a.map((v, i) => (i ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(v).toFixed(1)).join(' ');
+    g += `<path d="${line(h.gen)} L${x(23)} ${base} L${x(0)} ${base} Z" fill="#F5B700" opacity=".45"/><path d="${line(h.gen)}" fill="none" stroke="#C99200" stroke-width="1.5"/><path d="${line(h.load)}" fill="none" stroke="#18222C" stroke-width="2.5"/>`;
+    for (let i = 0; i < 24; i += 3) g += `<text x="${x(i)}" y="${Ht - 6}" text-anchor="middle">${hr12(i)}</text>`;
+    g += `<line x1="${x(H)}" x2="${x(H)}" y1="${t}" y2="${base}" stroke="#18222C" stroke-width="1.5"/><circle cx="${x(H)}" cy="${y(h.load[H])}" r="4.5" fill="#18222C"/>`;
+    const cap = h.cap || 1, sy = v => 6 + 38 * (1 - v / cap);
+    const sv = c.batt ? `<svg viewBox="0 0 ${W} 56" width="100%" role="img" aria-label="Battery charge through the day"><text x="${l - 6}" y="${sy(cap) + 4}" text-anchor="end">100%</text><text x="${l - 6}" y="${sy(0) + 4}" text-anchor="end">0%</text><path d="${h.soc.map((v, i) => (i ? 'L' : 'M') + x(i).toFixed(1) + ' ' + sy(v).toFixed(1)).join(' ')} L${x(23)} ${sy(0)} L${x(0)} ${sy(0)} Z" fill="#0E8C86" opacity=".5"/><line x1="${x(H)}" x2="${x(H)}" y1="6" y2="44" stroke="#18222C" stroke-width="1.5"/></svg>` : '<p class="muted small" style="margin:2px 0 0">No battery in this design, so the grid covers every hour without sun.</p>';
+    const gen = h.gen[H], load = h.load[H], d = h.soc[H] - h.soc[(H + 23) % 24], dis = Math.max(0, -d), chg = Math.max(0, d), direct = Math.min(gen, load), imp = h.grid[H], exp = h.exp[H];
+    const extra = gen > load + 0.05 ? `<p class="small muted" style="margin:6px 0 0">Extra solar of ${(gen - load).toFixed(1)} kW: ${[chg > 0.05 ? chg.toFixed(1) + ' kW charges the battery' : '', exp > 0.05 ? exp.toFixed(1) + ' kW goes to the grid and earns credit only after net metering is approved' : ''].filter(Boolean).join(', ')}.</p>` : '';
+    return `<svg viewBox="0 0 ${W} ${Ht}" width="100%" role="img" aria-label="Home usage and solar output by hour">${g}</svg>${c.batt ? '<div class="small muted" style="margin-top:6px">Battery charge</div>' : ''}${sv}
+      <div class="read"><div>At <b>${hr12(H)}</b> your home uses <b>${load.toFixed(1)} kW</b>, supplied by</div><div class="src"><span><i style="background:#F5B700"></i>Solar ${direct.toFixed(1)} kW</span><span><i style="background:#0E8C86"></i>Battery ${dis.toFixed(1)} kW</span><span><i style="background:#D9534F"></i>Grid ${imp.toFixed(1)} kW</span></div>${extra}</div>`;
+  }
+  function updateDay() { const E = UI.est, el = $('#daywrap'); if (el) el.innerHTML = dayHTML(E, Z(E, E.cfg)); updateScene(); }
+  function sourcesHTML(E, cur) {
+    const r = M.calc({ kwh: E.kwh, dayShare: E.dayShare, kw: cur.kw, batt: E.cfg.batt, rate: E.rate, nm: true }), p = [['Solar', r.direct, '#F5B700'], ['Battery', r.battShift, '#0E8C86'], ['Grid', r.gridKwh, '#D9534F']];
+    return `<div class="stack">${p.map(x => `<i style="width:${x[1] / r.load * 100}%;background:${x[2]}" title="${x[0]}"></i>`).join('')}</div><div class="src">${p.map(x => `<span><i style="background:${x[2]}"></i>${x[0]} ${pct(x[1] / r.load)} · ${Math.round(x[1])} kWh</span>`).join('')}</div>`;
+  }
+  function notesFor(E, cur) {
+    const c = E.cfg, T = M.TIERS[E.tier], n = [];
+    if (!isChanged(E)) n.push(['ok', `This is the ${T.label} template, sized from your bill and appliances. You can continue with it as it is.`]);
+    if (cur.offset > 1.2) n.push(['bad', `These panels would make about ${pct(cur.offset)} of your usage. Surplus earns only ₱${M.EXPORT_RATE}/kWh after net metering and nothing before it, so extra panels lengthen payback.`]);
+    if (cur.offset < 0.4) n.push(['', `Solar would cover only about ${pct(cur.offset)} of your usage, so most of your bill will remain.`]);
+    if (cur.exportedKwh > 0.3 * cur.gen) n.push(['', `Until net metering is approved, about ${Math.round(cur.exportedKwh)} kWh a month of daytime output earns no credit.`]);
+    if (c.batt === 0) n.push(['info', 'With no battery, evenings run on the grid and there is no backup in a blackout.']);
+    else { const hh = M.hourly({ kwh: E.kwh, dayShare: E.dayShare, kw: cur.kw, batt: c.batt }, 1); n.push(hh.depletedAt >= 0 ? ['info', `On a sunny day the battery runs out around ${hr12(hh.depletedAt)}. After that you draw from the grid.`] : ['ok', 'On a sunny day the battery lasts through the evening.']); }
+    if (c.panels >= capOf(E)) n.push(['info', `A ${Scene.NAMES[c.roof].toLowerCase()} roof is full at about ${capOf(E)} panels. Our engineer measures your real roof.`]);
+    return n.map(x => `<div class="flag ${x[0]}">${x[1]}</div>`).join('');
+  }
+  function hint(E, cur, n, what) {
+    if (!n) return `<div class="hint">That is the most ${what} this prototype allows.</div>`;
+    const dc = n.cost - cur.cost, sa = cur.billNM - n.billNM, sb = cur.billNoNM - n.billNoNM;
+    return `<div class="hint">One more costs ${peso(dc)} and saves ${peso(sb)} a month before net metering, ${peso(sa)} after${sa > 5 ? '. It pays for itself in ' + yrs(dc / (sa * 12)) : '. It adds almost no savings'}.</div>`;
+  }
+
+  function stepHome(E, util, rate) {
+    return `<h2>Tell us about your home</h2><p class="muted">We use your bill and appliances to size a system. It takes about a minute.</p><div class="form">
+      <label>Name<input type="text" data-b="name" value="${esc(E.name)}" placeholder="Juan dela Cruz"></label>
+      <label>City<select data-b="city">${D.CITIES.map(c => `<option ${c[0] === E.city ? 'selected' : ''}>${c[0]}</option>`).join('')}</select></label>
+      <label>Average monthly electric bill (₱)<input type="number" data-b="bill" value="${E.bill}" min="1000" step="100"></label>
+      <label>Electric utility<input type="text" value="${util}, assumed ₱${rate}/kWh" disabled></label></div>
+      <h3 style="margin-top:22px">Appliances you use</h3><table class="apps"><tr><th></th><th>Appliance</th><th>Quantity</th><th>Hours a day</th></tr>${E.apps.map((a, i) => `<tr><td><input type="checkbox" data-b="app.on.${i}" ${a.on ? 'checked' : ''} aria-label="Use ${a.label}"></td><td>${a.label}</td><td><input type="number" data-b="app.qty.${i}" value="${a.qty}" min="1"></td><td><input type="number" data-b="app.hrs.${i}" value="${a.hrs}" min="0.5" step="0.5"></td></tr>`).join('')}</table>
+      <p><button class="alt" data-act="calc">Show my options</button></p>`;
+  }
+  function stepTemplate(E) {
+    const rows = ['low', 'value', 'high'].map(t => { const s = E.res[t], T = M.TIERS[t], sel = E.tier === t;
+      return `<div class="opt${sel ? ' sel' : ''}" data-act="tier" data-t="${t}" role="button" tabindex="0" aria-pressed="${sel}"><div><div class="opt-h"><b>${T.label}</b><span class="muted">${T.tag}</span></div>
+        <div class="muted small">${s.panels} panels, ${kw1(s.kw)} kW · ${s.batt ? s.batt + ' kWh battery' : 'no battery'}</div>
+        ${sel ? `<ul class="tight small" style="margin-top:8px">${T.pros.map(x => `<li>${x}</li>`).join('')}</ul><div class="muted small">Trade-offs: ${T.cons.join('; ')}.</div>` : ''}</div>
+        <div class="opt-r"><div class="big">${peso(s.cost)}</div><div class="small muted">bill ${peso(s.billNM)} after net metering</div></div></div>`; }).join('');
+    return `<h2>Pick a starting point</h2><p class="muted">Most homeowners keep the recommended one. You can change anything on the next step.</p>${rows}
+      <p><button class="line" data-act="go" data-s="1">Back</button> <button class="alt" data-act="go" data-s="3">Use the ${M.TIERS[E.tier].label} template</button></p>`;
+  }
+  function designerHTML() {
+    const E = UI.est, c = E.cfg, cur = Z(E, c), changed = isChanged(E);
+    const nP = c.panels < capOf(E) ? Z(E, Object.assign({}, c, { panels: c.panels + 1 })) : null, nB = c.batt < M.BATT_STEP * M.BATT_MAX ? Z(E, Object.assign({}, c, { batt: c.batt + M.BATT_STEP })) : null;
+    return `<div class="rowb"><h2 style="margin:0">Fine-tune your system</h2>${changed ? '<span class="chip warn">Changed from template</span>' : '<span class="chip ok">Template, no changes</span>'}</div>
+      <p class="muted">Pick the roof closest to yours. Click an empty slot on the roof or the battery cabinet to add it, or the last filled one to remove it. Drag the sun to see any hour.</p>
+      <div class="rooftype"><div class="rt-h"><b>Your roof</b><span class="muted small">${Scene.NOTE[c.roof]} Fits up to ${capOf(E)} panels.</span></div><div class="rt-btns">${Scene.picker(c.roof)}</div></div>
+      <div id="scenewrap">${sceneHTML(E, cur)}</div><label class="slider scene-slider"><span>Time of day: <b>${hr12(E.hour)}</b></span><input type="range" min="0" max="23" value="${E.hour}" data-act="hour"></label><p class="small muted" style="margin:6px 0 0">Illustrative drawing. Our engineer measures your actual roof, wall space and where the equipment can go.</p>
+      <div class="ctls"><div><div class="rowb"><b>Solar panels</b><span class="muted small">550 W each</span></div><div class="stepper"><button class="line" data-act="pan" data-d="-1" ${c.panels <= 1 ? 'disabled' : ''} aria-label="Remove a panel">−</button><b>${c.panels}</b><button class="line" data-act="pan" data-d="1" ${nP ? '' : 'disabled'} aria-label="Add a panel">+</button><span class="muted small">${kw1(cur.kw)} kW</span></div>${hint(E, cur, nP, 'panels')}</div>
+        <div><div class="rowb"><b>Battery</b><span class="muted small">5 kWh modules</span></div><div class="stepper"><button class="line" data-act="bat" data-d="-1" ${c.batt <= 0 ? 'disabled' : ''} aria-label="Remove a battery">−</button><b>${c.batt / M.BATT_STEP}</b><button class="line" data-act="bat" data-d="1" ${nB ? '' : 'disabled'} aria-label="Add a battery">+</button><span class="muted small">${c.batt} kWh</span></div>${hint(E, cur, nB, 'battery')}</div>
+        <div><b>Monitoring</b><label class="chk"><input type="checkbox" data-act="mon" ${c.mon ? 'checked' : ''}> Monitoring and surge protection, ${peso(M.MON_PRICE)}</label></div></div>
+      <h3 style="margin-top:26px">A day with this system</h3>
+      <div class="toolbar"><div class="tabs"><button class="${E.rainy ? '' : 'on'}" data-act="dayw" data-w="0">Sunny day</button><button class="${E.rainy ? 'on' : ''}" data-act="dayw" data-w="1">Rainy day</button></div>
+        <div class="legend" style="margin:0"><span><i style="background:#F5B700"></i>Solar</span><span><i style="background:#18222C"></i>Home usage</span><span><i style="background:#D9534F"></i>Bought from grid</span><span><i style="background:#0E8C86"></i>Battery</span><span>Power in kW</span></div></div>
+      <div id="daywrap">${dayHTML(E, cur)}</div>
+      <h3 style="margin-top:26px">Where your power comes from in a typical month</h3>${sourcesHTML(E, cur)}
+      <p style="margin-top:22px"><button class="line" data-act="go" data-s="2">Back</button> <button class="line" data-act="resetCfg" ${changed ? '' : 'disabled'}>Reset to template</button> <button class="alt" data-act="go" data-s="4">Review</button></p>`;
+  }
+  function stepReview(E) {
+    const c = E.cfg, t = E.tpl, cur = Z(E, c), base = Z(E, t), changed = isChanged(E);
+    const row = (l, a, b, f, dir) => { const df = b - a, same = Math.abs(df) < 0.5, cls = same || !dir ? '' : ((df < 0) === (dir < 0) ? 'good' : 'bad'); return `<tr><td>${l}</td><td>${f(a)}</td><td><b>${f(b)}</b>${same ? '' : ` <span class="dlt ${cls}">${df > 0 ? '+' : '−'}${f(Math.abs(df))}</span>`}</td></tr>`; };
+    return `<h2>Review and send</h2><p class="muted">Our site engineer will visit, check your roof and wiring, and send a final quotation. You decide after you see it.</p>
+      <table class="cmp"><tr><th></th><th>${M.TIERS[E.tier].label} template</th><th>Your design</th></tr>${row('Price', base.cost, cur.cost, peso, -1)}${row('Panels', t.panels, c.panels, n => n + ', ' + kw1(n * M.PANEL_KW) + ' kW', 0)}${row('Battery', t.batt, c.batt, n => n ? n + ' kWh' : 'none', 0)}${row('Solar output', base.gen, cur.gen, n => Math.round(n) + ' kWh a month', 0)}
+        ${row('Bill until net metering is approved', base.billNoNM, cur.billNoNM, peso, -1)}${row('Bill after net metering is approved', base.billNM, cur.billNM, peso, -1)}${row('Pays for itself in', Math.min(41, base.paybackNM), Math.min(41, cur.paybackNM), yrs, -1)}</table>
+      <div style="margin-top:14px">${notesFor(E, cur)}</div>
+      <h3 style="margin-top:22px">What to expect</h3><ul class="tight"><li>Today you pay about ${peso(cur.baseBill)} a month. After installation, about ${peso(cur.billNoNM)} until the utility approves net metering, then about ${peso(cur.billNM)}.</li><li>Net metering is approved by the utility, not by us. We prepare and track the papers.</li><li>Output is lower in the wet season, June to October, by up to ${pct(1 - Math.min.apply(null, M.SEASON))} in the weakest months.</li></ul>
+      <p style="margin-top:22px"><button class="line" data-act="go" data-s="3">Back</button> <button class="alt" data-act="submitEst">${changed ? 'Send my design to the engineer' : 'Send this template to the engineer'}</button></p>`;
+  }
+  function estimatorView() {
+    if (!UI.est) UI.est = { name: '', city: 'Marikina', bill: 6500, apps: JSON.parse(JSON.stringify(D.APPLIANCES)), tier: 'value', step: 1, hour: 19, rainy: false, res: null };
+    const E = UI.est, util = D.CITIES.find(c => c[0] === E.city)[1], rate = D.UTILITIES[util].rate;
+    if (!E.res) E.step = 1;
+    const names = ['Your home', 'Template', 'Fine-tune', 'Review'];
+    const nav = names.map((l, i) => `<button class="${E.step === i + 1 ? 'on' : ''}" data-act="go" data-s="${i + 1}" ${i && !E.res ? 'disabled' : ''}>${i + 1}. ${l}</button>`).join('');
+    const body = E.step === 1 ? stepHome(E, util, rate) : E.step === 2 ? stepTemplate(E) : E.step === 3 ? '<div id="designer">' + designerHTML() + '</div>' : stepReview(E);
+    return `<h1>Plan your solar system</h1><p class="sub">Start from a template, change what you like, and watch your electric bill estimate move.</p><div class="steps">${nav}</div>
+      <div class="wiz${E.res ? '' : ' solo'}"><section>${body}</section>${E.res ? `<aside id="statement" class="statement">${statementHTML()}</aside>` : ''}</div>`;
+  }
+  function redrawDesigner() { const el = $('#designer'); if (el) el.innerHTML = designerHTML(); updateStatement(); UI.est.pop = null; }
+
+  function myProjectView() {
+    const p = P(S.myProject); if (!p) return '<p>No project yet. Start with an estimate.</p>';
+    let h = `<h1>My project — ${esc(p.name)}</h1><p class="sub">${p.id} · ${esc(p.city)} · ${p.utility} · ${M.TIERS[p.tier].label} design</p><div class="card">${pills(p)}</div>`;
+    if (p.stage === 1) h += '<div class="card"><h2>Waiting for site assessment</h2><p>Our engineer will visit, check roof and wiring, and prepare your final proposal. We will notify you.</p></div>';
+    if (p.stage === 2) h += '<div class="card"><h2>Quotation being prepared</h2><p>Your quotation is being sized and reviewed by our engineer and manager.</p></div>';
+    if (p.stage === 3) h += p.released ? `<div class="card"><h2>Your quotation is ready</h2><div class="metric"><span>Indicative estimate</span><b>${peso(p.indicative.cost)}</b></div><div class="metric"><span>Final quotation</span><b>${peso(p.final.total)} (${p.quoteDelta >= 0 ? '+' : ''}${(p.quoteDelta * 100).toFixed(1)}%)</b></div>
+      <p class="muted small">Expected bill: ${peso(p.size.billNoNM)} before net metering, ${peso(p.size.billNM)} after approval.</p><button class="alt" data-act="accept" data-id="${p.id}">Accept quotation</button></div>` : '<div class="card"><h2>Quotation awaiting release</h2><p>Approved internally; our staff will release it to you shortly.</p></div>';
+    if (p.permit) h += `<div class="card"><h2>Your requirements</h2><p class="muted small">Upload scans or photos instead of handing in paper. We read them to prefill your permit forms (prototype: upload is simulated).</p>
+      <table>${p.permit.items.map((i, k) => `<tr><td>${esc(i.n)}<div class="muted small">${i.track}</div></td><td>${statusChip(i)}</td><td class="right">${i.status !== 'ok' ? `<button class="line" data-act="upload" data-id="${p.id}" data-k="${k}">Upload</button>` : ''}</td></tr>`).join('')}</table>
+      ${p.permit.submitted ? '<p class="small muted">Submitted to the utility/LGU. Approval time is outside our control; we will keep you updated.</p>' : ''}</div>`;
+    if (p.stage === 6) h += '<div class="card"><h2>Your system is running</h2><p>See how it is performing, and why your bill is what it is, under <a href="#/insights">My bill insights</a>.</p></div>';
+    return h;
+  }
+  function statusChip(i) { return i.status === 'ok' ? `<span class="chip ok">Received${i.source ? ' · ' + (i.source === 'uploaded' ? 'uploaded' : i.source === 'physical' ? 'physical copy' : i.source) : ''}</span>` : i.status === 'pending' ? `<span class="chip warn">${i.days ? 'Pending ' + i.days + ' d' : 'Needs review'}</span>` : '<span class="chip bad">Missing</span>'; }
+
+  function insightsView() {
+    const done = S.projects.filter(p => p.stage === 6);
+    if (!UI.insProject || !P(UI.insProject) || P(UI.insProject).stage !== 6) UI.insProject = (P(S.myProject) && P(S.myProject).stage === 6) ? S.myProject : (done[0] || {}).id;
+    const p = P(UI.insProject);
+    if (!p) return '<h1>My bill insights</h1><div class="card">Insights appear once your system is installed and sending data.</div>';
+    const s = D.series(p), last = s[s.length - 1], gap = last.actual - last.promised;
+    const h = M.hourly({ kwh: p.kwh * last.loadF, dayShare: p.dayShare, kw: p.size.kw, batt: p.size.batt }, UI.rainy ? 0.3 : 1);
+    const nmOk = p.nmFrom != null;
+    let o = `<h1>Why is my bill what it is?</h1><p class="sub">${sim} Demo accounts: <select data-b="insp">${done.map(x => `<option value="${x.id}" ${x.id === p.id ? 'selected' : ''}>${esc(x.name)} (${x.id})</option>`).join('')}</select></p>
+    <div class="grid g4"><div class="card kpi"><span class="muted small">Promised bill</span><div class="big">${peso(last.promised)}</div></div><div class="card kpi"><span class="muted small">Actual bill (${last.m})</span><div class="big">${peso(last.actual)}</div></div>
+      <div class="card kpi"><span class="muted small">Difference</span><div class="big" style="color:${gap > 0 ? 'var(--red)' : 'var(--green)'}">${signed(gap)}</div></div><div class="card kpi"><span class="muted small">Net metering</span><div class="big" style="font-size:1.2rem">${nmOk ? '<span class="chip ok">Approved</span>' : '<span class="chip warn">Pending utility approval</span>'}</div></div></div>
+    <div class="grid g2"><div class="card"><h2>What explains the difference (${last.m})</h2><p class="muted small">Each step changes one thing at a time, so the amounts add up to the total difference.</p>
+      ${hbars(Object.keys(DRV).map(k => ({ l: DRV[k].l, v: last.parts[k], c: DRV[k].c, t: signed(last.parts[k]) })))}
+      <ul class="tight small" style="margin-top:10px">${!last.nm ? `<li>Net metering is not approved yet, so about ${Math.round(last.lostCredit / M.EXPORT_RATE)} kWh of extra daytime power earned no credit (${peso(last.lostCredit)} this month).</li>` : ''}
+      ${last.parts.weather > 50 ? `<li>Cloudy or rainy weather cut solar output to ${pct(last.genF)} of the yearly average.</li>` : ''}${last.parts.load > 50 ? `<li>Your household used ${pct(last.loadF - 1)} more electricity than when we sized the system.</li>` : ''}</ul></div>
+    <div class="card"><h2>Bill by month</h2>${monthChart(s)}</div></div>
+    <div class="card"><h2>A day in your home</h2><div class="tabs"><button class="${UI.rainy ? '' : 'on'}" data-act="weather" data-w="0">Sunny day</button><button class="${UI.rainy ? 'on' : ''}" data-act="weather" data-w="1">Rainy day</button></div>
+      ${hourChart(h)}<p class="small">On this day you draw about <b>${h.gridTotal.toFixed(1)} kWh</b> from the grid${h.depletedAt >= 0 ? `, mostly because the battery runs out around <b>${h.depletedAt}:00</b>` : ''}. ${UI.rainy ? 'Rain lowers solar charging, so the battery covers less of the evening.' : 'Evening use is high after sunset, when panels are not producing.'}</p></div>
+    <div class="card"><h2>Still worried about your bill?</h2><p class="small">The numbers above are what we would tell you if you called. ${p.ticket ? '<span class="chip warn">A service ticket is already open</span>' : '<button class="line" data-act="ticket" data-id="' + p.id + '">Open a service ticket</button>'}</p></div>`;
+    return o;
+  }
+
+  function pipelineView() {
+    const mine = { staff: [1, 3, 4], engineer: [1, 2], manager: [2], qa: [4], management: [6] }[S.role] || [];
+    let h = `<h1>Project pipeline</h1><p class="sub">Every project has one verified record. Highlighted rows are waiting on <b>${ROLES[S.role]}</b>.</p><div class="card"><table><tr><th>Project</th><th>Location</th><th>Design</th><th>Progress</th><th>Attention</th></tr>`;
+    S.projects.slice().sort((a, b) => a.stage - b.stage).forEach(p => {
+      const g = GATES[p.stage], waiting = g && g.need.includes(S.role) && !p.approvals[p.stage].includes(S.role) && !(p.stage === 3 && !p.released && S.role !== 'staff');
+      const fl = flags(p).length; h += `<tr class="click" data-act="open" data-id="${p.id}" ${waiting ? 'style="background:var(--amber-soft)"' : ''}><td><b>${esc(p.name)}</b><div class="muted small">${p.id}</div></td><td>${esc(p.city)}<div class="muted small">${p.utility}</div></td><td>${M.TIERS[p.tier].label}<div class="muted small">${kw1(p.size.kw)} kW${p.size.batt ? ' + ' + p.size.batt + ' kWh' : ''}</div></td><td>${pills(p)}</td><td>${waiting ? '<span class="chip warn">Your approval</span> ' : ''}${fl ? `<span class="chip bad">${fl} flag${fl > 1 ? 's' : ''}</span>` : '<span class="chip ok">Clear</span>'}</td></tr>`;
+    });
+    return h + '</table></div>';
+  }
+
+  function detailView(id) {
+    const p = P(id); if (!p) return '<p>Not found.</p>';
+    let h = `<p><a href="#/pipeline">← Pipeline</a></p><h1>${esc(p.name)} <span class="chip blue">${p.id}</span></h1><p class="sub">${esc(p.city)} · ${p.utility} · ${M.TIERS[p.tier].label} design (${kw1(p.size.kw)} kW${p.size.batt ? ', ' + p.size.batt + ' kWh battery' : ''})</p><div class="card">${pills(p)}</div>`;
+    const g = GATES[p.stage];
+    if (g) { const done = p.approvals[p.stage], can = g.need.includes(S.role) && !done.includes(S.role) && !(p.stage === 3 && p.released);
+      h += `<div class="card"><h3>Human approval gate — stage ${p.stage}</h3><p>${g.label}.</p><p>${g.need.map(r => `<span class="chip ${done.includes(r) ? 'ok' : 'warn'}">${done.includes(r) ? '✓ ' : ''}${ROLES[r].split(' (')[0]}</span>`).join(' ')}</p>
+        ${p.stage === 3 && p.released ? '<p class="muted">Released. Waiting for the customer to accept.</p>' : `<button class="alt" data-act="approve" data-id="${p.id}" ${can ? '' : 'disabled'}>${can ? 'Approve as ' + ROLES[S.role].split(' (')[0] : 'Waiting on other role(s)'}</button>`}</div>`; }
+    const f = flags(p); h += `<div class="card"><h3>AI agent flags</h3>${f.length ? f.map(x => `<div class="flag ${x.k}"><b class="who">Agent</b>${x.t}</div>`).join('') : '<span class="chip ok">Nothing flagged</span>'}</div>`;
+    h += `<div class="card"><h3>Assessment record</h3><div class="grid g4"><div><span class="muted small">Bill-derived usage</span><div><b>${Math.round(p.kwh)} kWh/mo</b></div></div><div><span class="muted small">Appliance-derived</span><div><b>${Math.round(p.appKwh)} kWh/mo</b></div></div><div><span class="muted small">Daytime share</span><div><b>${pct(p.dayShare)}</b></div></div><div><span class="muted small">Rate</span><div><b>₱${p.rate}/kWh</b></div></div></div><p class="small muted" style="margin:10px 0 0">Customer design: ${p.size.panels} panels (${kw1(p.size.kw)} kW), ${p.size.batt ? p.size.batt + ' kWh battery' : 'no battery'}${p.size.mon ? ', monitoring' : ''}${esc(p.note || '')}</p></div>`;
+    if (p.stage >= 2 && p.final) { const t = p.final.total, bt = p.size.batt * M.BATT_PRICE, rem = Math.max(0, t - bt);
+      const bom = [['Solar panels (550 W) × ' + p.size.panels, rem * 0.42], [p.size.batt ? 'Hybrid inverter' : 'Grid-tied inverter', rem * 0.2], ...(p.size.batt ? [['Battery ' + p.size.batt + ' kWh', bt]] : []), ['Mounting & racking', rem * 0.1], ['Protection, cabling & BOS', rem * 0.1], ['Installation labor & commissioning', rem * 0.18]];
+      h += `<div class="card"><h3>Quote &amp; bill of materials</h3><div class="metric"><span>Indicative estimate (customer saw)</span><b>${peso(p.indicative.cost)}</b></div><div class="metric"><span>Final quotation</span><b>${peso(t)} (${p.quoteDelta >= 0 ? '+' : ''}${(p.quoteDelta * 100).toFixed(1)}%)</b></div><table style="margin-top:8px">${bom.map(b => `<tr><td>${b[0]}</td><td class="right">${peso(b[1])}</td></tr>`).join('')}</table></div>`; }
+    if (p.permit) h += permitCard(p);
+    if (p.install) h += installCard(p);
+    if (p.stage === 6) { const s = D.series(p), l = s[s.length - 1];
+      h += `<div class="card"><h3>After-sales &amp; KPIs</h3><div class="grid g4"><div><span class="muted small">Latest promised</span><div><b>${peso(l.promised)}</b></div></div><div><span class="muted small">Latest actual</span><div><b>${peso(l.actual)}</b></div></div><div><span class="muted small">Net metering</span><div><b>${p.nmFrom != null ? 'Approved' : 'Pending'}</b></div></div><div><span class="muted small">Ticket</span><div><b>${p.ticket ? 'Open' : 'None'}</b></div></div></div>${monthChart(s)}<button class="alt" data-act="action" data-id="${p.id}" ${S.role === 'management' && !p.actionApproved ? '' : 'disabled'}>${p.actionApproved ? 'Action plan approved' : 'Management: approve action plan'}</button></div>`; }
+    h += `<div class="card"><h3>Audit log</h3>${p.log.slice().reverse().map(x => `<div class="small"><b>${esc(x.who)}</b> — ${esc(x.t)}</div>`).join('')}</div>`;
+    return h;
+  }
+  function permitCard(p) {
+    const s = permitStats(p), ready = !s.miss.length && !s.pend.length, staff = S.role === 'staff';
+    return `<div class="card"><h3>Permit package <span class="muted small">— ${s.ok}/${s.total} complete · prepared in parallel with installation</span></h3><div class="bar" style="margin:8px 0"><i style="width:${s.ok / s.total * 100}%;background:var(--green)"></i></div>
+      <table>${p.permit.items.map((i, k) => `<tr><td>${esc(i.n)}<div class="muted small">${i.track}</div></td><td>${statusChip(i)}</td><td class="right">${staff && i.status !== 'ok' && !p.permit.submitted ? `<button class="line" data-act="received" data-id="${p.id}" data-k="${k}">Mark received</button>` : ''}</td></tr>`).join('')}</table>
+      <p>${p.permit.submitted ? (p.permit.approved ? '<span class="chip ok">Approved by utility/LGU</span>' : `<span class="chip warn">Submitted — awaiting utility/LGU (outside system control)</span> <button class="line" data-act="utilOk" data-id="${p.id}" ${staff ? '' : 'disabled'}>Record approval (demo)</button>`) : `<button class="alt" data-act="submitPermit" data-id="${p.id}" ${staff && ready ? '' : 'disabled'}>Staff: confirm &amp; submit package</button> <span class="muted small">${ready ? '' : 'Resolve missing/pending items first.'}</span>`}</p></div>`;
+  }
+  function techScores(p) {
+    return D.TECHS.map(t => { const need = p.size.batt ? 'battery' : 'grid', fit = t.skills.includes(need) ? 1 : 0.3, avail = Math.max(0, 1 - t.freeInDays / 7), prox = t.base === p.city ? 1 : t.region === D.regionOf(p.city) ? 0.7 : 0.2;
+      return { t, fit, avail, prox, score: 0.35 * fit + 0.35 * avail + 0.3 * prox }; }).sort((a, b) => b.score - a.score);
+  }
+  function installCard(p) {
+    const done = p.install.milestones.every(m => m.done), canTick = ['technician', 'engineer', 'manager'].includes(S.role) && !p.install.qa;
+    return `<div class="card"><h3>Installation &amp; turnover <span class="muted small">— technician: ${p.install.tech || 'unassigned'}</span></h3>
+      ${p.install.milestones.map((m, k) => `<label style="display:block"><input type="checkbox" ${m.done ? 'checked' : ''} ${canTick && p.install.tech ? '' : 'disabled'} data-act="milestone" data-id="${p.id}" data-k="${k}"> ${m.n}</label>`).join('')}
+      ${!p.install.tech && !p.install.qa ? `<h3 style="margin-top:12px">Suggested technicians <span class="muted small">(0.35 skill fit + 0.35 availability + 0.30 proximity)</span></h3><table><tr><th>Technician</th><th>Fit</th><th>Avail.</th><th>Near</th><th>Score</th><th></th></tr>${techScores(p).slice(0, 4).map(r => `<tr><td>${r.t.name}<div class="muted small">${r.t.base}</div></td><td>${pct(r.fit)}</td><td>${pct(r.avail)}</td><td>${pct(r.prox)}</td><td><b>${r.score.toFixed(2)}</b></td><td><button class="line" data-act="assign" data-id="${p.id}" data-n="${r.t.name}" ${['manager', 'staff'].includes(S.role) ? '' : 'disabled'}>Assign</button></td></tr>`).join('')}</table>` : ''}
+      <p style="margin-top:10px">${p.install.qa ? '<span class="chip ok">QA approved · turned over</span>' : `<button class="alt" data-act="qa" data-id="${p.id}" ${S.role === 'qa' && done ? '' : 'disabled'}>QA: approve &amp; turn over</button> <span class="muted small">${done ? '' : 'All milestones and evidence photos required.'}</span>`}</p></div>`;
+  }
+
+  function permitsView() {
+    const list = S.projects.filter(p => p.permit);
+    return `<h1>Permit tracker</h1><p class="sub">Preparation, completeness and deadlines. Approval itself is done by the utility/LGU and is out of scope.</p><div class="card"><table><tr><th>Project</th><th>Utility</th><th>Completeness</th><th>Open items</th><th>Status</th></tr>${list.map(p => { const s = permitStats(p);
+      return `<tr class="click" data-act="open" data-id="${p.id}"><td><b>${esc(p.name)}</b><div class="muted small">${p.id}</div></td><td>${p.utility}</td><td style="min-width:140px"><div class="bar"><i style="width:${s.ok / s.total * 100}%;background:var(--green)"></i></div><span class="small muted">${s.ok}/${s.total}</span></td><td class="small">${s.miss.map(i => esc(i.n)).concat(s.pend.map(i => esc(i.n) + ' (pending)')).slice(0, 3).join('<br>') || '—'}</td><td>${p.permit.approved ? '<span class="chip ok">Approved</span>' : p.permit.submitted ? '<span class="chip warn">Awaiting utility</span>' : '<span class="chip blue">Preparing</span>'}</td></tr>`; }).join('')}</table></div>`;
+  }
+  function workordersView() {
+    const me = 'R. Dizon', list = S.projects.filter(p => p.install && (S.role !== 'technician' || p.install.tech === me));
+    return `<h1>Work orders</h1><p class="sub">${S.role === 'technician' ? 'Your assigned addresses and milestones.' : 'All installations and who is responsible for which address.'}</p><div class="card"><table><tr><th>Project / address</th><th>Technician</th><th>Milestones</th><th>Status</th></tr>${list.map(p => `<tr class="click" data-act="open" data-id="${p.id}"><td><b>${esc(p.name)}</b><div class="muted small">${esc(p.city)}</div></td><td>${p.install.tech || '<span class="chip warn">Unassigned</span>'}</td><td>${p.install.milestones.filter(m => m.done).length}/${p.install.milestones.length}</td><td>${p.install.qa ? '<span class="chip ok">Turned over</span>' : '<span class="chip blue">In progress</span>'}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">None assigned.</td></tr>'}</table></div>`;
+  }
+
+  // ---------- analytics ----------
+  function analyticsView() {
+    const A = D.analytics(), tabs = [['variance', 'Expectation gap', ['engineer', 'manager', 'management']], ['permits', 'Permit cycle time', ['manager', 'management']], ['funnel', 'Tier conversion', ['manager', 'management']], ['techs', 'Technician utilization', ['manager', 'management']]].filter(t => t[2].includes(S.role));
+    const cur = tabs.find(t => t[0] === UI.tab.an) ? UI.tab.an : tabs[0][0];
+    let h = `<h1>Analytics ${sim}</h1><p class="sub">Each view solves a specific installer problem, at a specific stage. See “Analytics spec” for method and data.</p>`;
+    if (S.role === 'management') { const r = A.rows; h += `<div class="grid g4"><div class="card kpi"><span class="muted small">Avg. bill gap vs promise</span><div class="big">${pct(mean(r.map(x => x.gap / x.promised)))}</div></div><div class="card kpi"><span class="muted small">Median permit prep</span><div class="big">${med(r.map(x => x.prep))} days</div></div><div class="card kpi"><span class="muted small">Quote acceptance</span><div class="big">${pct(['low', 'value', 'high'].reduce((a, t) => a + A.funnel[t].accept, 0) / ['low', 'value', 'high'].reduce((a, t) => a + A.funnel[t].quote, 0))}</div></div><div class="card kpi"><span class="muted small">Avg. technician utilization</span><div class="big">${pct(mean(A.techs.map(t => t.util)))}</div></div></div>`; }
+    h += `<div class="tabs">${tabs.map(t => `<button class="${t[0] === cur ? 'on' : ''}" data-act="antab" data-t="${t[0]}">${t[1]}</button>`).join('')}</div>`;
+    if (cur === 'variance') {
+      const r = A.rows, hit = r.filter(x => Math.abs(x.gap) / x.promised <= 0.1).length / r.length, tot = mean(r.map(x => x.gap)), warn = r.slice().sort((a, b) => b.gap / b.promised - a.gap / a.promised).slice(0, 8);
+      h += `<div class="grid g2"><div class="card"><h2>Why actual bills differ from the promise</h2><p class="muted small">Average gap ${signed(tot)}/month across ${r.length} installed projects. Only ${pct(hit)} land within ±10% of the promised bill.</p>${hbars(Object.keys(DRV).map(k => ({ l: DRV[k].l, v: mean(r.map(x => x.parts[k])), c: DRV[k].c, t: signed(mean(r.map(x => x.parts[k]))) })))}
+        <div class="flag info"><b class="who">Insight</b>Projects still waiting on net metering: ${r.filter(x => !x.nm).length} of ${r.length}. If the inquiry estimate shows the bill both before and after approval, this driver stops being a surprise. That is a policy the data can support.</div></div>
+        <div class="card"><h2>By design tier</h2><table><tr><th>Tier</th><th>Projects</th><th>Avg gap</th><th>Within ±10%</th></tr>${['low', 'value', 'high'].map(t => { const x = r.filter(y => y.tier === t); return `<tr><td>${M.TIERS[t].label}</td><td>${x.length}</td><td>${signed(mean(x.map(y => y.gap)))}</td><td>${pct(x.filter(y => Math.abs(y.gap) / y.promised <= 0.1).length / x.length)}</td></tr>`; }).join('')}</table></div></div>
+        <div class="card"><h2>Variance warnings (largest gaps)</h2><table><tr><th>Project</th><th>Utility</th><th>Promised</th><th>Actual</th><th>Main driver</th></tr>${warn.map(x => { const k = Object.keys(x.parts).sort((a, b) => Math.abs(x.parts[b]) - Math.abs(x.parts[a]))[0]; return `<tr><td>${x.id}</td><td>${x.utility}</td><td>${peso(x.promised)}</td><td>${peso(x.actual)} <span class="chip bad">${pct(x.gap / x.promised)}</span></td><td><span class="chip" style="background:${DRV[k].c}22">${DRV[k].l}</span></td></tr>`; }).join('')}</table></div>`;
+    }
+    if (cur === 'permits') {
+      h += `<div class="grid g2"><div class="card"><h2>Preparation time to complete requirements</h2><p class="muted small">Median days from acceptance to a complete package — the part we can influence.</p>${hbars(A.utilities.map(u => ({ l: u, v: med(A.rows.filter(x => x.utility === u).map(x => x.prep)), c: 'var(--deep)', t: med(A.rows.filter(x => x.utility === u).map(x => x.prep)) + ' days' })), { max: 40 })}
+        <h3 style="margin-top:14px">Returned for revision</h3>${hbars(A.utilities.map(u => { const x = A.rows.filter(y => y.utility === u); return { l: u, v: x.filter(y => y.returned).length / x.length, c: 'var(--red)', t: pct(x.filter(y => y.returned).length / x.length) }; }), { max: 1 })}</div>
+        <div class="card"><h2>Most common missing item, by utility</h2><table><tr><th>Utility</th><th>Item</th><th>Cases</th></tr>${A.utilities.map(u => { const c = {}; A.rows.filter(x => x.utility === u && x.missing).forEach(x => c[x.missing] = (c[x.missing] || 0) + 1); const top = Object.entries(c).sort((a, b) => b[1] - a[1])[0] || ['—', 0]; return `<tr><td>${u}</td><td>${top[0]}</td><td>${top[1]}</td></tr>`; }).join('')}</table>
+        <h3 style="margin-top:14px">Outside our control</h3><p class="small muted">Utility/LGU approval wait (median): ${A.utilities.map(u => u.split(' ')[0] + ' ' + med(A.rows.filter(x => x.utility === u).map(x => x.approval)) + ' d').join(' · ')}. Shown for context only.</p></div></div>`;
+    }
+    if (cur === 'funnel') {
+      const F = A.funnel, dl = A.deltas;
+      h += `<div class="grid g2"><div class="card"><h2>Inquiry → quote → acceptance</h2><table><tr><th>Tier</th><th>Picked</th><th>Quoted</th><th>Accepted</th><th>Conversion</th></tr>${['low', 'value', 'high'].map(t => `<tr><td>${M.TIERS[t].label}</td><td>${F[t].pick}</td><td>${F[t].quote}</td><td>${F[t].accept}</td><td><b>${pct(F[t].accept / F[t].pick)}</b></td></tr>`).join('')}</table></div>
+        <div class="card"><h2>Estimate vs final quotation</h2><div class="metric"><span>Average change</span><b>${(mean(dl) * 100).toFixed(1)}%</b></div><div class="metric"><span>Quotes more than 10% above the estimate</span><b>${pct(dl.filter(d => d > 0.1).length / dl.length)}</b></div><p class="small muted">Tests whether big jumps between the customer's first estimate and the final quote reduce acceptance.</p></div></div>`;
+    }
+    if (cur === 'techs') h += `<div class="card"><h2>Technician utilization</h2><p class="muted small">Booked days ÷ ~62 working days in the period.</p>${hbars(A.techs.map(t => ({ l: t.name, v: t.util, c: t.util > 0.85 ? 'var(--red)' : 'var(--green)', t: pct(t.util) + ' · ' + t.jobs + ' jobs' })), { max: 1 })}<p class="small muted">Overloaded technicians (red) are what the assignment score on each installation uses to spread work.</p></div>`;
+    return h;
+  }
+
+  function specView() {
+    const A = [
+      ['A1', 'Expectation gap: estimate vs actual bill, decomposed by cause', '1, 2, 6', 'Customer, engineer, manager', 'Bill, appliances, location, monthly seasonal irradiance (public: PVGIS / NASA POWER), net-metering approval date, monthly bill and inverter kWh export', 'Model real; actuals simulated', 'Scenario-based energy balance, then one-factor-at-a-time attribution (weather → load → net metering)'],
+      ['A2', 'Customer load, battery and grid-draw profile', '1, 6', 'Customer', 'Appliance schedule (or smart-meter export), system size, battery size', 'Model real; profile assumed', 'Hourly energy balance simulation with battery state of charge'],
+      ['A3', 'Variance warning', '6', 'Engineer, management', 'A1 output, threshold set with client', 'Prototype rule', 'Threshold on gap %, labelled with dominant driver; later a control chart'],
+      ['A4', 'Permit preparation cycle time and return rate by utility/location', '4', 'Staff, manager', 'Timestamps for each requirement received/returned, utility, city, document source', 'Simulated; needs event logging from day one', 'Median / IQR cycle time, return rate; planned logistic regression for returned-submission risk'],
+      ['A5', 'Tier conversion and quote-change effect', '1–3', 'Manager, management', 'Inquiries, tier picked, indicative vs final quote, accepted or not', 'Simulated', 'Funnel; logistic regression of acceptance on tier and quote change'],
+      ['A6', 'Technician assignment and utilization', '5', 'Manager', 'Skills, base, availability calendar, job durations, address history', 'Simulated', 'Weighted scoring now; min-cost assignment (OR) as a later step'],
+      ['A7', 'Complaint classification (deferred)', '6', 'Management', 'Tickets with cause labels', 'Needs client history', 'A1 drivers give a rule-based root-cause label; ML only after enough labelled tickets']
+    ];
+    const R = [['R1', 'Bill insights (monthly)', 'Customer', 'A1, A2'], ['R2', 'Quotation expectation sheet (before and after net metering)', 'Customer', 'A1'], ['R3', 'Permit readiness checklist per project', 'Staff', 'A4'], ['R4', 'Weekly permit bottleneck report', 'Manager', 'A4'], ['R5', 'Variance warning digest', 'Engineer, manager', 'A3'], ['R6', 'Tier conversion report', 'Management', 'A5'], ['R7', 'Technician utilization', 'Manager', 'A6'], ['R8', 'Executive KPI summary', 'Management', 'A1–A6']];
+    return `<h1>Analytics specification</h1><p class="sub">Problem → data → method → report, tied to a stage. Draft for the proposal; validate with the client.</p><div class="card"><table><tr><th></th><th>Problem solved</th><th>Stage</th><th>Audience</th><th>Data needed</th><th>Data status</th><th>Method</th></tr>${A.map(a => `<tr><td><b>${a[0]}</b></td>${a.slice(1).map(c => `<td class="small">${c}</td>`).join('')}</tr>`).join('')}</table></div>
+      <div class="card"><h2>Reports</h2><table><tr><th></th><th>Report</th><th>Audience</th><th>Built from</th></tr>${R.map(r => `<tr><td><b>${r[0]}</b></td><td>${r[1]}</td><td>${r[2]}</td><td>${r[3]}</td></tr>`).join('')}</table></div>`;
+  }
+  function usersView() {
+    const rows = [['Customer', 'Own estimate, project status, documents, bill insights', 'Accepts quotation', 'TBC'], ['Intake / permit staff', 'Intake, permit packages, all open items', 'Verify data, release quote, submit permits', 'TBC'], ['Site engineer', 'Assessments, quotations, variance warnings', 'Assessment, quotation', 'TBC'], ['Manager', 'Pipeline, permit and technician reports, tier conversion', 'Quotation, assignments', 'TBC'], ['QA', 'Installation evidence', 'Turnover', 'TBC'], ['Technician', 'Only own work orders', 'Milestones', 'TBC'], ['Management / admin', 'All dashboards, KPI summary, users and roles', 'After-sales action plans', 'TBC']];
+    return `<h1>Users &amp; roles</h1><p class="sub">Use the “Viewing as” selector to see what each role gets. User counts are open questions for the client.</p><div class="card"><table><tr><th>Role</th><th>Sees</th><th>Approves / acts</th><th>Users</th></tr>${rows.map(r => `<tr>${r.map(c => `<td>${c}</td>`).join('')}</tr>`).join('')}</table></div>`;
+  }
+
+  // ---------- router ----------
+  function allowed() { return Object.keys(ROUTES).filter(k => ROUTES[k].roles.includes(S.role)); }
+  function render() {
+    const hash = location.hash.replace(/^#\/?/, '').split('/'); let route = hash[0] || allowed()[0], arg = hash[1];
+    if (route === 'project') { if (S.role === 'customer') route = 'myproject'; } else if (!allowed().includes(route)) { location.hash = '#/' + allowed()[0]; return; }
+    $('#nav').innerHTML = allowed().map(k => `<a href="#/${k}" class="${k === route || (route === 'project' && k === 'pipeline') ? 'on' : ''}">${ROUTES[k].label}</a>`).join('');
+    const views = { estimator: estimatorView, myproject: myProjectView, insights: insightsView, pipeline: pipelineView, permits: permitsView, workorders: workordersView, analytics: analyticsView, spec: specView, users: usersView, project: () => detailView(arg) };
+    $('#view').innerHTML = (views[route] || pipelineView)();
+    $('#roleSel').value = S.role; updateStatement();
+  }
+
+  // ---------- actions ----------
+  function advance(p) {
+    const g = GATES[p.stage]; if (!g || !g.need.every(r => p.approvals[p.stage].includes(r))) return;
+    if (p.stage === 1) { p.stage = 2; p.final = { total: p.indicative.cost * (1 + p.quoteDelta) }; log(p, 'Assessment verified; quotation drafted and BOM generated', 'System'); }
+    else if (p.stage === 2) { p.stage = 3; log(p, 'Quotation approved; ready for release', 'System'); }
+    else if (p.stage === 3) { p.released = true; log(p, 'Quotation released to customer', 'System'); }
+  }
+  const A = {
+    reset() { if (confirm('Reset all demo data?')) { S = fresh(); UI = { tab: {}, est: null, insProject: null, rainy: false }; save(); location.hash = '#/estimator'; render(); } },
+    calc() { const E = UI.est, util = D.CITIES.find(c => c[0] === E.city)[1], rate = D.UTILITIES[util].rate, st = D.appStats(E.apps);
+      E.billNow = +E.bill; E.kwh = Math.max(100, (E.billNow - M.FIXED) / rate); E.dayShare = st.dayShare; E.appKwh = st.kwhMonth; E.rate = rate; E.util = util; recompute(); E.step = 2; render(); window.scrollTo(0, 0); },
+    tier(d) { UI.est.tier = d.t; recompute(); render(); },
+    pan(d) { const E = UI.est; E.cfg.panels = Math.max(1, Math.min(capOf(E), E.cfg.panels + (+d.d))); if (+d.d > 0) E.pop = { t: 'p', i: E.cfg.panels - 1 }; redrawDesigner(); },
+    slot(d) { const E = UI.est, i = +d.i; E.cfg.panels = (i === E.cfg.panels - 1 && i > 0) ? i : i + 1; if (E.cfg.panels > 0 && i >= E.cfg.panels - 1) E.pop = { t: 'p', i }; redrawDesigner(); },
+    bat(d) { const E = UI.est; E.cfg.batt = Math.max(0, Math.min(M.BATT_STEP * M.BATT_MAX, E.cfg.batt + (+d.d) * M.BATT_STEP)); if (+d.d > 0) E.pop = { t: 'b', i: E.cfg.batt / M.BATT_STEP - 1 }; redrawDesigner(); },
+    bslot(d) { const E = UI.est, j = +d.j, n = (j + 1) * M.BATT_STEP; E.cfg.batt = E.cfg.batt === n ? j * M.BATT_STEP : n; if (E.cfg.batt === n) E.pop = { t: 'b', i: j }; redrawDesigner(); },
+    mon(d, el) { UI.est.cfg.mon = el.checked; redrawDesigner(); },
+    resetCfg() { const E = UI.est, r = E.cfg.roof; E.cfg = Object.assign({}, E.tpl, { roof: r }); E.cfg.panels = Math.min(E.cfg.panels, capOf(E)); redrawDesigner(); },
+    roof(d) { const E = UI.est; E.cfg.roof = d.r; E.cfg.panels = Math.min(E.cfg.panels, capOf(E)); E.pop = null; redrawDesigner(); },
+    go(d) { const E = UI.est; if (+d.s > 1 && !E.res) return; E.step = +d.s; render(); window.scrollTo(0, 0); },
+    dayw(d) { UI.est.rainy = d.w === '1'; redrawDesigner(); },
+    submitEst() { const E = UI.est, id = 'P-' + (S.seq++); const p = D.mk({ id, name: E.name || 'New customer', city: E.city, utility: E.util, tier: E.tier, kwh: E.kwh, dayShare: E.dayShare, appKwh: E.appKwh, cfg: Object.assign({}, E.cfg), note: cfgNote(E) });
+      S.projects.push(p); S.myProject = id; save(); toast('Request sent to the site engineer'); location.hash = '#/myproject'; },
+    open(d) { location.hash = '#/project/' + d.id; },
+    approve(d) { const p = P(d.id); if (!p) return; const g = GATES[p.stage]; if (!g || !g.need.includes(S.role) || p.approvals[p.stage].includes(S.role)) return; p.approvals[p.stage].push(S.role); log(p, 'Approved stage ' + p.stage + ' gate'); advance(p); save(); render(); },
+    accept(d) { const p = P(d.id); p.accepted = true; p.stage = 4; D.startExec(p, 'blank', 0, null);
+      p.permit.items.forEach(i => { if (/application form|permit application/i.test(i.n)) { i.status = 'pending'; i.source = 'prefilled'; i.days = 0; } if (i.n === 'Latest electric bill') { i.status = 'ok'; i.source = 'uploaded'; } });
+      log(p, 'Customer accepted quotation; permit preparation and installation started in parallel', 'Customer'); save(); toast('Quotation accepted'); render(); },
+    upload(d) { const p = P(d.id), i = p.permit.items[+d.k]; i.status = 'ok'; i.source = 'uploaded'; log(p, 'Uploaded “' + i.n + '” — data extracted to prefill forms (simulated OCR)', 'Customer'); save(); toast('Uploaded and read'); render(); },
+    received(d) { const p = P(d.id), i = p.permit.items[+d.k]; i.status = 'ok'; i.source = i.source || 'physical'; log(p, 'Marked received: ' + i.n); save(); render(); },
+    submitPermit(d) { const p = P(d.id); p.permit.submitted = true; log(p, 'Permit package confirmed and submitted'); save(); render(); },
+    utilOk(d) { const p = P(d.id); p.permit.approved = true; p.nmFrom = 0; log(p, 'Utility/LGU approval recorded (demo)'); save(); render(); },
+    assign(d) { const p = P(d.id); p.install.tech = d.n; log(p, 'Assigned technician ' + d.n + ' to ' + p.city + ' address'); save(); render(); },
+    milestone(d, el) { const p = P(d.id); p.install.milestones[+d.k].done = el.checked; save(); render(); },
+    qa(d) { const p = P(d.id); p.install.qa = true; p.stage = 6; log(p, 'QA approved; project turned over to after-sales'); save(); render(); },
+    action(d) { const p = P(d.id); p.actionApproved = true; log(p, 'Action plan approved'); save(); render(); },
+    ticket(d) { P(d.id).ticket = true; save(); toast('Ticket opened'); render(); },
+    weather(d) { UI.rainy = d.w === '1'; render(); },
+    antab(d) { UI.tab.an = d.t; render(); }
+  };
+  function recompute() { const E = UI.est; E.res = {}; ['low', 'value', 'high'].forEach(t => E.res[t] = M.size(t, E.kwh, E.dayShare, E.rate)); const roof = (E.cfg && E.cfg.roof) || 'gable'; E.tpl = M.template(E.tier, E.kwh); E.tpl.panels = Math.min(E.tpl.panels, Scene.CAPS[roof]); E.cfg = Object.assign({}, E.tpl, { roof }); }
+
+  document.addEventListener('click', e => { const t = e.target.closest('[data-act]'); if (!t || t.tagName === 'INPUT' && e.type === 'click' && t.type === 'checkbox') return; if (t.tagName === 'INPUT') return; if (A[t.dataset.act]) A[t.dataset.act](t.dataset, t); });
+  document.addEventListener('change', e => { const t = e.target;
+    if (t.tagName === 'INPUT' && t.type === 'checkbox' && t.dataset.act && A[t.dataset.act]) { A[t.dataset.act](t.dataset, t); return; }
+    const b = t.dataset && t.dataset.b; if (!b) return;
+    if (b === 'insp') { UI.insProject = t.value; render(); return; }
+    const E = UI.est; if (b.startsWith('app.')) { const [, k, i] = b.split('.'); E.apps[+i][k] = k === 'on' ? t.checked : +t.value; } else E[b] = t.value;
+    if (b === 'city') render();
+  });
+  document.addEventListener('input', e => { const t = e.target; if (t.dataset && t.dataset.act === 'hour') { UI.est.hour = +t.value; updateDay(); const lb = $('.scene-slider b'); if (lb) lb.textContent = hr12(UI.est.hour); } });
+  document.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.classList && e.target.classList.contains('opt')) e.target.click(); });
+  $('#roleSel').innerHTML = Object.keys(ROLES).map(k => `<option value="${k}">${ROLES[k]}</option>`).join('');
+  $('#roleSel').addEventListener('change', e => { S.role = e.target.value; save(); location.hash = '#/' + allowed()[0]; render(); });
+  window.addEventListener('hashchange', render);
+  render();
+})();

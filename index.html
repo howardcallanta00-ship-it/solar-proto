@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SolarFlow | Solar planning and installation tracking</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><svg width="30" height="30" viewBox="0 0 28 28" aria-hidden="true"><circle cx="14" cy="14" r="6" fill="#FFB800"/><g stroke="#FFB800" stroke-width="2.4" stroke-linecap="round"><path d="M14 2v3M14 23v3M2 14h3M23 14h3M5.5 5.5l2 2M20.5 20.5l2 2M22.5 5.5l-2 2M7.5 20.5l-2 2"/></g></svg><b>SolarFlow</b></div>
+  <div class="who">
+    <label for="roleSel">Signed in as</label>
+    <select id="roleSel"></select>
+    <button class="ghost" data-act="reset" title="Clear saved data and start over">Start over</button>
+  </div>
+</header>
+<nav id="nav" class="nav"></nav>
+<main id="view"></main>
+<footer class="foot">Estimates use assumed rates and sample data. Permit requirements shown are for guidance and are confirmed by your installer. Net metering is approved by your utility.</footer>
+<div id="toast" class="toast" role="status"></div>
+<script src="scene.js"></script>
+<script src="model.js"></script>
+<script src="data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
