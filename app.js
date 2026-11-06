@@ -183,10 +183,10 @@
     return `<h2>Tell us about your home</h2><p class="muted">We use your bill and appliances to size a system. It takes about a minute.</p><div class="form">
       <label>Name<input type="text" data-b="name" value="${esc(E.name)}" placeholder="Juan dela Cruz"></label>
       <label>City<select data-b="city">${D.CITIES.map(c => `<option ${c[0] === E.city ? 'selected' : ''}>${c[0]}</option>`).join('')}</select></label>
-      <label>Average monthly electric bill (₱)<input type="number" data-b="bill" value="${E.bill}" min="1000" step="100"></label>
+      <label>Average monthly electric bill (₱)<input type="number" data-b="bill" value="${E.bill}" min="1000" step="100" ${E.err ? 'aria-invalid="true" aria-describedby="billerr"' : ''}>${E.err ? `<span class="err" id="billerr" role="alert">${E.err}</span>` : ''}</label>
       <label>Electric utility<input type="text" value="${util}, assumed ₱${rate}/kWh" disabled></label></div>
       <h3 style="margin-top:22px">Appliances you use</h3><table class="apps"><tr><th></th><th>Appliance</th><th>Quantity</th><th>Hours a day</th></tr>${E.apps.map((a, i) => `<tr><td><input type="checkbox" data-b="app.on.${i}" ${a.on ? 'checked' : ''} aria-label="Use ${a.label}"></td><td>${a.label}</td><td><input type="number" data-b="app.qty.${i}" value="${a.qty}" min="1"></td><td><input type="number" data-b="app.hrs.${i}" value="${a.hrs}" min="0.5" step="0.5"></td></tr>`).join('')}</table>
-      <p><button class="alt" data-act="calc">Show my options</button></p>`;
+      ${E.err && E.err.startsWith('Tick') ? `<div class="flag bad" role="alert">${E.err}</div>` : ''}<p><button class="alt" data-act="calc">Show my options</button></p>`;
   }
   function stepTemplate(E) {
     const rows = ['low', 'value', 'high'].map(t => { const s = E.res[t], T = M.TIERS[t], sel = E.tier === t;
@@ -224,6 +224,11 @@
       <h3 style="margin-top:22px">What to expect</h3><ul class="tight"><li>Today you pay about ${peso(cur.baseBill)} a month. After installation, about ${peso(cur.billNoNM)} until the utility approves net metering, then about ${peso(cur.billNM)}.</li><li>Net metering is approved by the utility, not by us. We prepare and track the papers.</li><li>Output is lower in the wet season, June to October, by up to ${pct(1 - Math.min.apply(null, M.SEASON))} in the weakest months.</li></ul>
       <p style="margin-top:22px"><button class="line" data-act="go" data-s="3">Back</button> <button class="alt" data-act="submitEst">${changed ? 'Send my design to the engineer' : 'Send this template to the engineer'}</button></p>`;
   }
+  // first-step preview: the house the customer is about to size, with their own bill beside it
+  function previewHTML(E) {
+    const svg = Scene.scene({ roof: 'gable', panels: 7, batt: 1, hour: 16, pop: null, gen: 2.1, charge: 0.6, dis: 0, grid: 0, exp: 0 }).replace(/ data-act="[a-z]+"/g, '').replace(/cursor:pointer/g, 'cursor:default');
+    return `<aside class="preview" aria-label="Preview of a solar home">${svg}<div class="pv-cap"><b>${peso(+E.bill || 0)}</b><span>is what you pay each month today. Next, we show what this house could cut it to.</span></div></aside>`;
+  }
   function estimatorView() {
     if (!UI.est) UI.est = { name: '', city: 'Marikina', bill: 6500, apps: JSON.parse(JSON.stringify(D.APPLIANCES)), tier: 'value', step: 1, hour: 19, rainy: false, res: null };
     const E = UI.est, util = D.CITIES.find(c => c[0] === E.city)[1], rate = D.UTILITIES[util].rate;
@@ -232,7 +237,7 @@
     const nav = names.map((l, i) => `<button class="${E.step === i + 1 ? 'on' : ''}" data-act="go" data-s="${i + 1}" ${i && !E.res ? 'disabled' : ''}>${i + 1}. ${l}</button>`).join('');
     const body = E.step === 1 ? stepHome(E, util, rate) : E.step === 2 ? stepTemplate(E) : E.step === 3 ? '<div id="designer">' + designerHTML() + '</div>' : stepReview(E);
     return `<h1>Plan your solar system</h1><p class="sub">Start from a template, change what you like, and watch your electric bill estimate move.</p><div class="steps">${nav}</div>
-      <div class="wiz${E.res ? '' : ' solo'}"><section>${body}</section>${E.res ? `<aside id="statement" class="statement">${statementHTML()}</aside>` : ''}</div>`;
+      <div class="wiz"><section>${body}</section>${E.res ? `<aside id="statement" class="statement">${statementHTML()}</aside>` : previewHTML(E)}</div>`;
   }
   function redrawDesigner() { const el = $('#designer'); if (el) el.innerHTML = designerHTML(); updateStatement(); UI.est.pop = null; }
 
@@ -275,7 +280,11 @@
 
   function pipelineView() {
     const mine = { staff: [1, 3, 4], engineer: [1, 2], manager: [2], qa: [4], management: [6] }[S.role] || [];
-    let h = `<h1>Project pipeline</h1><p class="sub">Every project has one verified record. Highlighted rows are waiting on <b>${ROLES[S.role]}</b>.</p><div class="card"><table><tr><th>Project</th><th>Location</th><th>Design</th><th>Progress</th><th>Attention</th></tr>`;
+    const isWait = p => { const g = GATES[p.stage]; return g && g.need.includes(S.role) && !p.approvals[p.stage].includes(S.role) && !(p.stage === 3 && !p.released && S.role !== 'staff'); };
+    const nWait = S.projects.filter(isWait).length, nFlow = S.projects.filter(p => p.stage >= 4 && p.stage < 6).length, nFlag = S.projects.filter(p => flags(p).length).length;
+    let h = `<h1>Project pipeline</h1><p class="sub">Every project has one verified record. Highlighted rows are waiting on <b>${ROLES[S.role]}</b>.</p>
+      <div class="kstrip" role="list"><div role="listitem"><b>${nWait}</b><span>waiting on you</span></div><div role="listitem"><b>${nFlow}</b><span>in permits or installation</span></div><div role="listitem"><b>${nFlag}</b><span>with open flags</span></div><div role="listitem"><b>${S.projects.length}</b><span>projects in total</span></div></div>
+      <div class="card tablecard"><table><tr><th>Project</th><th>Location</th><th>Design</th><th>Progress</th><th>Attention</th></tr>`;
     S.projects.slice().sort((a, b) => a.stage - b.stage).forEach(p => {
       const g = GATES[p.stage], waiting = g && g.need.includes(S.role) && !p.approvals[p.stage].includes(S.role) && !(p.stage === 3 && !p.released && S.role !== 'staff');
       const fl = flags(p).length; h += `<tr class="click" data-act="open" data-id="${p.id}" ${waiting ? 'style="background:var(--amber-soft)"' : ''}><td><b>${esc(p.name)}</b><div class="muted small">${p.id}</div></td><td>${esc(p.city)}<div class="muted small">${p.utility}</div></td><td>${M.TIERS[p.tier].label}<div class="muted small">${kw1(p.size.kw)} kW${p.size.batt ? ' + ' + p.size.batt + ' kWh' : ''}</div></td><td>${pills(p)}</td><td>${waiting ? '<span class="chip warn">Your approval</span> ' : ''}${fl ? `<span class="chip bad">${fl} flag${fl > 1 ? 's' : ''}</span>` : '<span class="chip ok">Clear</span>'}</td></tr>`;
@@ -398,7 +407,10 @@
   }
   const A = {
     reset() { if (confirm('Reset all demo data?')) { S = fresh(); UI = { tab: {}, est: null, insProject: null, rainy: false }; save(); location.hash = '#/estimator'; render(); } },
-    calc() { const E = UI.est, util = D.CITIES.find(c => c[0] === E.city)[1], rate = D.UTILITIES[util].rate, st = D.appStats(E.apps);
+    calc() { const E = UI.est; E.err = '';
+      if (!(+E.bill >= 1000)) { E.err = 'Enter your average monthly bill, at least ₱1,000, so we can size the system.'; render(); const i = $('[data-b=bill]'); if (i) i.focus(); return; }
+      if (!E.apps.some(a => a.on)) { E.err = 'Tick at least one appliance you use, so we can estimate daytime and evening use.'; render(); return; }
+      const util = D.CITIES.find(c => c[0] === E.city)[1], rate = D.UTILITIES[util].rate, st = D.appStats(E.apps);
       E.billNow = +E.bill; E.kwh = Math.max(100, (E.billNow - M.FIXED) / rate); E.dayShare = st.dayShare; E.appKwh = st.kwhMonth; E.rate = rate; E.util = util; recompute(); E.step = 2; render(); window.scrollTo(0, 0); },
     tier(d) { UI.est.tier = d.t; recompute(); render(); },
     pan(d) { const E = UI.est; E.cfg.panels = Math.max(1, Math.min(capOf(E), E.cfg.panels + (+d.d))); if (+d.d > 0) E.pop = { t: 'p', i: E.cfg.panels - 1 }; redrawDesigner(); },

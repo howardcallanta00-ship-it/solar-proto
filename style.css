@@ -135,5 +135,43 @@ table{background:transparent}th{text-transform:none;letter-spacing:0;padding-top
 .scene{border-radius:28px}
 ::selection{background:#FFE08A}
 @media(max-width:640px){main{padding:22px 16px 40px}.top{padding:10px 16px}.nav{padding:12px 16px 0}.wiz>section{padding:18px;border-radius:22px}h1{font-size:2rem}.foot{padding:0 16px 30px}}
-.nav{max-width:1264px;margin:0 auto;box-sizing:border-box;width:100%}
+.nav{min-height:62px;max-width:1264px;margin:0 auto;box-sizing:border-box;width:100%}
 input[type=checkbox],input[type=range]{accent-color:#14263B}
+
+/* ---- standard V4/V5 pass: alignment, mobile priority, states ---- */
+.nav,.top{box-sizing:border-box}
+main{max-width:1264px}
+.foot{max-width:1264px}
+.skip{position:absolute;left:12px;top:-60px;background:#14263B;color:#fff;padding:10px 16px;border-radius:999px;z-index:50;text-decoration:none;font-weight:600}.skip:focus{top:10px}
+.kstrip{display:flex;flex-wrap:wrap;gap:0;margin:0 0 20px;border-radius:22px;background:rgba(255,255,255,.7);border:1px solid #fff;overflow:hidden}
+.kstrip>div{flex:1 1 160px;padding:16px 22px;border-right:1px solid var(--line)}.kstrip>div:last-child{border:0}
+.kstrip b{display:block;font:800 2rem/1 "Bricolage Grotesque",system-ui,sans-serif;letter-spacing:-.03em}.kstrip span{color:var(--mute);font-size:.88rem}
+.tablecard{overflow-x:auto}
+.err{color:#A12622;font-size:.84rem;font-weight:500}
+input[aria-invalid=true]{border-color:#D9534F;box-shadow:0 0 0 3px rgba(217,83,79,.18)}
+.preview{position:sticky;top:84px}.preview .scene{box-shadow:0 20px 50px rgba(20,38,59,.2)}
+.pv-cap{display:flex;gap:12px;align-items:baseline;margin-top:12px;color:var(--mute);font-size:.92rem}.pv-cap b{font:800 1.7rem/1 "Bricolage Grotesque",system-ui,sans-serif;color:var(--ink);white-space:nowrap}
+.wiz{grid-template-columns:minmax(0,1fr) minmax(320px,440px)}
+@media(max-width:980px){
+ .wiz{grid-template-columns:1fr;gap:20px}.preview{position:static;order:-1}.preview .pv-cap{display:none}
+ /* the bill stays on screen as a compact bar so the house stays the focus */
+ .statement{position:fixed!important;left:0;right:0;bottom:0;top:auto;z-index:30;order:0;border-radius:22px 22px 0 0;padding:12px 18px calc(12px + env(safe-area-inset-bottom));display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 18px}
+ .statement h3,.statement .st-row:nth-child(2),.statement .st-row:nth-child(3),.st-tear,.st-note{display:none}
+ .statement .st-row{flex:1 1 auto;margin:0}.statement .st-top{flex-direction:column;gap:0}.statement .st-top b{font-size:1.5rem}.statement .st-bar{display:none}
+ .statement .st-line{flex:0 0 auto;gap:8px;font-size:.85rem}
+ main{padding-bottom:120px}
+}
+@media(max-width:640px){
+ .who label{display:none}.who select{max-width:170px}.brand b{font-size:1.2rem}
+ .nav,.steps{scrollbar-width:none}.steps{padding-bottom:2px}
+ .rt-btns{gap:6px}.rbtn{font-size:12px}
+ .ctls{grid-template-columns:1fr}
+ .scene svg text{font-size:.9em}
+}
+@media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+.card:has(table){overflow-x:auto}.card table{min-width:560px}
+body{overflow-x:hidden}
+@media(max-width:640px){.scene>svg:last-child g[font-size]{display:none}}
+main{min-height:70vh}
+.who select{width:210px}.top{min-height:66px}
+@media(max-width:640px){.who select{width:150px}.top{flex-wrap:nowrap}.brand{flex:0 0 auto}.who{flex:0 1 auto;min-width:0}.who .ghost{padding:6px 8px;white-space:nowrap}}
