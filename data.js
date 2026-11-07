@@ -86,7 +86,7 @@
     p = mk({ id: 'P-1004', name: 'Reyes Residence', city: 'Marikina', utility: 'Meralco', tier: 'value', kwh: 520, dayShare: 0.33, stage: 6, nmFrom: 5, growth: 0.12 });
     startExec(p, 'ok', 7, 'R. Dizon'); p.permit.submitted = true; p.permit.approved = true; p.install.qa = true; p.accepted = true; P.push(p);
     p = mk({ id: 'P-1005', name: 'Villanueva Residence', city: 'Antipolo', utility: 'Meralco', tier: 'value', kwh: 600, dayShare: 0.38, stage: 4, accepted: true });
-    startExec(p, 'messy', 3, 'M. Lopez'); P.push(p);
+    startExec(p, 'messy', 3, 'R. Dizon'); P.push(p);
     p = mk({ id: 'P-1006', name: 'Bautista Residence', city: 'Tarlac City', utility: 'Electric cooperative', tier: 'low', kwh: 400, dayShare: 0.45, stage: 4, accepted: true });
     startExec(p, 'ok', 7, 'J. Cruz'); p.permit.submitted = true; P.push(p);
     p = mk({ id: 'P-1007', name: 'Mendoza Residence', city: 'Mandaue', utility: 'Visayan Electric', tier: 'value', kwh: 540, dayShare: 0.3, stage: 4, accepted: true });
