@@ -19,8 +19,8 @@
     permits:    { label: 'Permit tracker', roles: ['staff', 'manager', 'management'] },
     workorders: { label: 'Work orders', roles: ['technician', 'qa', 'manager'] },
     analytics:  { label: 'Analytics', roles: ['engineer', 'manager', 'management'] },
-    spec:       { label: 'Analytics spec', roles: STAFF },
-    users:      { label: 'Users & roles', roles: ['management'] }
+    spec:       { label: 'Documentation', roles: STAFF },
+    users:      { label: 'Team and access', roles: ['management'] }
   };
   const GATES = {
     1: { need: ['engineer', 'staff'], label: 'Engineer completes site assessment, staff verify the data' },
@@ -28,14 +28,86 @@
     3: { need: ['staff'], label: 'Staff release the quotation; the customer then accepts' }
   };
   const KEY = 'solarflow_v3';
-  let S = load(), UI = { tab: {}, est: null, insProject: null, rainy: false };
+  let S = load(), UI = { tab: {}, est: null, insProject: null, rainy: false, menu: null, q: '', pf: 'all' };
 
   function load() { try { const s = JSON.parse(localStorage.getItem(KEY)); if (s && s.projects) return s; } catch (e) {} return fresh(); }
-  function fresh() { return { role: 'customer', projects: D.seedProjects(), myProject: 'P-1004', seq: 1010 }; }
+  function fresh() { return { authed: false, role: 'customer', projects: D.seedProjects(), myProject: 'P-1004', seq: 1010 }; }
   function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} }
   const P = id => S.projects.find(p => p.id === id);
   function toast(m) { const t = $('#toast'); t.textContent = m; t.classList.add('show'); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('show'), 2400); }
-  function log(p, text, who) { p.log.push({ t: text, who: who || ROLES[S.role].split(' (')[0] }); }
+  function log(p, text, who) { p.log.push({ t: text, who: who || userOf(S.role).n, at: Date.now() }); }
+
+
+  // ---------- accounts, header, sidebar ----------
+  const ACCOUNTS = [
+    { r: 'customer', n: 'Ana Reyes', t: 'Homeowner, Marikina' },
+    { r: 'staff', n: 'Liza Ramos', t: 'Intake and permits' },
+    { r: 'engineer', n: 'Paolo Garcia', t: 'Site engineer' },
+    { r: 'manager', n: 'Carla Navarro', t: 'Operations manager' },
+    { r: 'qa', n: 'Nico Villar', t: 'Quality assurance' },
+    { r: 'technician', n: 'Rico Dizon', t: 'Field technician' },
+    { r: 'management', n: 'Dante Cruz', t: 'Management and admin' }
+  ];
+  const userOf = r => ACCOUNTS.find(a => a.r === r) || ACCOUNTS[0];
+  const ini = n => n.split(/\s+/).map(w => w[0]).slice(0, 2).join('').toUpperCase();
+  const hue = s => { let h = 0; for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) % 360; return h; };
+  const avatar = (n, sz) => `<span class="av" style="--h:${hue(n)}${sz ? ';--s:' + sz + 'px' : ''}" aria-hidden="true">${ini(n)}</span>`;
+  const ICON = {
+    pipeline: '<path d="M3 7l9-4 9 4-9 4-9-4z"/><path d="M3 12l9 4 9-4M3 17l9 4 9-4"/>',
+    permits: '<path d="M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8l-5-5z"/><path d="M14 3v5h5M9 14l2 2 4-4"/>',
+    workorders: '<path d="M14.7 6.3a4 4 0 005 5L21 13l-8 8-4-4 8-8zM3 21l5-5"/><path d="M14 3l4 4"/>',
+    analytics: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
+    spec: '<path d="M4 4h12a4 4 0 014 4v12H8a4 4 0 01-4-4V4z"/><path d="M8 9h8M8 13h6"/>',
+    users: '<circle cx="9" cy="8" r="3.5"/><path d="M2 20c0-3.5 3-6 7-6s7 2.5 7 6M17 5a3.5 3.5 0 010 7M22 20c0-2.5-1.5-4.5-4-5.5"/>',
+    estimator: '<circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/>',
+    myproject: '<path d="M3 11l9-7 9 7v9a1 1 0 01-1 1h-5v-6H9v6H4a1 1 0 01-1-1v-9z"/>',
+    insights: '<path d="M3 17l5-5 4 4 8-9"/><path d="M15 7h5v5"/>'
+  };
+  const ico = k => `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[k] || ''}</svg>`;
+  function isWait(p) { const g = GATES[p.stage]; return !!g && g.need.includes(S.role) && !p.approvals[p.stage].includes(S.role) && !(p.stage === 3 && !p.released && S.role !== 'staff'); }
+  function notes() {
+    const out = [];
+    if (S.role === 'customer') {
+      const p = P(S.myProject); if (!p) return out;
+      if (p.stage === 3 && p.released) out.push({ href: '#/myproject', t: 'Your quotation is ready', s: 'Review it and accept when you are comfortable.' });
+      if (p.permit) { const m = permitStats(p); if (m.miss.length) out.push({ href: '#/myproject', t: m.miss.length + ' requirement' + (m.miss.length > 1 ? 's' : '') + ' still needed', s: m.miss.map(i => i.n).slice(0, 2).join(', ') }); }
+      return out;
+    }
+    S.projects.forEach(p => { if (isWait(p)) out.push({ href: '#/project/' + p.id, t: p.name + ' needs your approval', s: GATES[p.stage].label }); });
+    S.projects.forEach(p => { const f = flags(p).filter(x => x.k === 'bad')[0]; if (f && ['staff', 'engineer', 'manager', 'management'].includes(S.role)) out.push({ href: '#/project/' + p.id, t: p.name, s: f.t.length > 96 ? f.t.slice(0, 94) + '…' : f.t }); });
+    return out.slice(0, 7);
+  }
+  function renderChrome() {
+    const mode = !S.authed ? 'auth' : S.role === 'customer' ? 'customer' : 'staff';
+    document.body.dataset.mode = mode;
+    if (!S.authed) { $('#hright').innerHTML = ''; $('#nav').innerHTML = ''; return; }
+    const u = userOf(S.role), n = notes();
+    const bell = UI.menu === 'bell' ? `<div class="menu" role="menu"><div class="menu-h">Notifications</div>${n.length ? n.map(x => `<a role="menuitem" href="${x.href}" class="mi"><b>${esc(x.t)}</b><span>${esc(x.s)}</span></a>`).join('') : '<div class="mi empty"><b>You are all caught up</b><span>New approvals and issues appear here.</span></div>'}</div>` : '';
+    const usr = UI.menu === 'user' ? `<div class="menu" role="menu"><div class="menu-h"><b>${esc(u.n)}</b><span>${esc(ROLES[S.role].split(' (')[0])}</span></div><button role="menuitem" class="mi" data-act="logout"><b>Switch account</b><span>Return to the sign-in screen</span></button><button role="menuitem" class="mi" data-act="reset"><b>Reset demo data</b><span>Restore the original sample projects</span></button><button role="menuitem" class="mi" data-act="logout"><b>Sign out</b></button></div>` : '';
+    $('#hright').innerHTML = `<div class="menuwrap"><button class="iconbtn" data-act="menu" data-m="bell" aria-label="Notifications, ${n.length} new" aria-expanded="${UI.menu === 'bell'}"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 8a6 6 0 0112 0c0 7 3 8 3 8H3s3-1 3-8M10 20a2 2 0 004 0"/></svg>${n.length ? `<i class="badge">${n.length}</i>` : ''}</button>${bell}</div>
+      <div class="menuwrap"><button class="userbtn" data-act="menu" data-m="user" aria-label="Account menu for ${esc(u.n)}" aria-expanded="${UI.menu === 'user'}">${avatar(u.n)}<span class="un"><b>${esc(u.n)}</b><small>${esc(ROLES[S.role].split(' (')[0])}</small></span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>${usr}</div>`;
+    const route = (location.hash.replace(/^#\/?/, '').split('/')[0]) || allowed()[0];
+    const cnt = k => { if (k === 'pipeline') return S.projects.filter(isWait).length; if (k === 'permits') return S.projects.filter(p => p.permit && !p.permit.submitted && (permitStats(p).miss.length || permitStats(p).pend.length)).length; if (k === 'workorders') return S.projects.filter(p => p.install && !p.install.qa && (S.role !== 'technician' || p.install.tech === 'R. Dizon')).length; return 0; };
+    const item = k => `<a href="#/${k}" class="${k === route || (route === 'project' && k === 'pipeline') ? 'on' : ''}" ${k === route ? 'aria-current="page"' : ''}>${mode === 'staff' ? ico(k) : ''}<span>${ROUTES[k].label}</span>${mode === 'staff' && cnt(k) ? `<i class="cnt">${cnt(k)}</i>` : ''}</a>`;
+    const ks = allowed();
+    if (mode === 'staff') {
+      const ref = ks.filter(k => k === 'spec' || k === 'users'), main = ks.filter(k => !ref.includes(k));
+      $('#nav').innerHTML = `<div class="grp">Workspace</div>${main.map(item).join('')}${ref.length ? `<div class="grp">Reference</div>${ref.map(item).join('')}` : ''}`;
+    } else $('#nav').innerHTML = ks.map(item).join('');
+    $('.hsearch').style.display = mode === 'staff' && ks.includes('pipeline') ? '' : 'none';
+  }
+  function modal(o) {
+    $('#modal').innerHTML = `<div class="scrim" data-act="mclose"></div><div class="dlg" role="alertdialog" aria-modal="true" aria-labelledby="mt"><h3 id="mt">${o.title}</h3><p>${o.body}</p><div class="dlg-b"><button class="line" data-act="mclose">Cancel</button><button class="alt" data-act="mok">${o.ok}</button></div></div>`;
+    UI.mok = o.fn; setTimeout(() => { const b = $('#modal .alt'); if (b) b.focus(); }, 0);
+  }
+  function loginView() {
+    const grp = (title, list) => `<div class="acc-g">${title}</div>` + list.map(a => `<button class="acc" data-act="login" data-r="${a.r}">${avatar(a.n, 40)}<span><b>${a.n}</b><small>${a.t}</small></span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button>`).join('');
+    const svg = Scene.scene({ roof: 'gable', panels: 9, batt: 2, hour: 15, pop: null, gen: 2.8, charge: 0.9, dis: 0, grid: 0, exp: 0, intro: true }).replace(/ data-act="[a-z]+"/g, '').replace(/cursor:pointer/g, 'cursor:default');
+    return `<div class="login"><section class="login-hero"><a class="brand" href="#/"><svg width="34" height="34" viewBox="0 0 28 28" aria-hidden="true"><circle cx="14" cy="14" r="6" fill="#FFB800"/><g stroke="#FFB800" stroke-width="2.4" stroke-linecap="round"><path d="M14 2v3M14 23v3M2 14h3M23 14h3M5.5 5.5l2 2M20.5 20.5l2 2M22.5 5.5l-2 2M7.5 20.5l-2 2"/></g></svg><b>SolarFlow</b></a>
+      <h1>See your solar savings before you sign.</h1><p>Size a home system, watch your bill change as you design it, then follow permits and installation to the last bolt.</p>${svg}</section>
+      <section class="login-form"><div class="login-card"><h2>Sign in</h2><p class="muted">This is a demonstration workspace with sample projects. Choose an account to explore it.</p>
+      ${grp('For homeowners', ACCOUNTS.slice(0, 1))}${grp('For the SolarFlow team', ACCOUNTS.slice(1))}</div></section></div>`;
+  }
 
   // ---------- charts ----------
   function hbars(items, o) {
@@ -93,7 +165,7 @@
       const s = permitStats(p);
       s.miss.forEach(i => f.push({ k: 'bad', t: `Missing requirement: ${i.n} (${i.track}, ${p.utility}).` }));
       s.pend.forEach(i => f.push({ k: '', t: `Pending: ${i.n} has been waiting ${i.days} days.` }));
-      if (p.permit.submitted && !p.permit.approved) f.push({ k: 'info', t: 'Submitted. Approval is by the utility/LGU and outside this system; keep tracking the deadline.' });
+      if (p.permit.submitted && !p.permit.approved) f.push({ k: 'info', t: 'Submitted. Approval comes from the utility or LGU; keep tracking the deadline.' });
     }
     if (p.install && !p.install.tech && !p.install.qa) f.push({ k: '', t: 'No technician assigned yet. See the suggestions below.' });
     if (p.stage === 6) {
@@ -217,12 +289,12 @@
   function stepReview(E) {
     const c = E.cfg, t = E.tpl, cur = Z(E, c), base = Z(E, t), changed = isChanged(E);
     const row = (l, a, b, f, dir) => { const df = b - a, same = Math.abs(df) < 0.5, cls = same || !dir ? '' : ((df < 0) === (dir < 0) ? 'good' : 'bad'); return `<tr><td>${l}</td><td>${f(a)}</td><td><b>${f(b)}</b>${same ? '' : ` <span class="dlt ${cls}">${df > 0 ? '+' : '−'}${f(Math.abs(df))}</span>`}</td></tr>`; };
-    return `<h2>Review and send</h2><p class="muted">Our site engineer will visit, check your roof and wiring, and send a final quotation. You decide after you see it.</p>
+    return `<div class="prop"><span class="chip blue">Draft proposal</span><h2>${esc(E.name || 'Your')} solar proposal</h2><p class="muted">Our site engineer will visit, check your roof and wiring, and send a final quotation. You decide after you see it.</p>
       <table class="cmp"><tr><th></th><th>${M.TIERS[E.tier].label} template</th><th>Your design</th></tr>${row('Price', base.cost, cur.cost, peso, -1)}${row('Panels', t.panels, c.panels, n => n + ', ' + kw1(n * M.PANEL_KW) + ' kW', 0)}${row('Battery', t.batt, c.batt, n => n ? n + ' kWh' : 'none', 0)}${row('Solar output', base.gen, cur.gen, n => Math.round(n) + ' kWh a month', 0)}
         ${row('Bill until net metering is approved', base.billNoNM, cur.billNoNM, peso, -1)}${row('Bill after net metering is approved', base.billNM, cur.billNM, peso, -1)}${row('Pays for itself in', Math.min(41, base.paybackNM), Math.min(41, cur.paybackNM), yrs, -1)}</table>
       <div style="margin-top:14px">${notesFor(E, cur)}</div>
       <h3 style="margin-top:22px">What to expect</h3><ul class="tight"><li>Today you pay about ${peso(cur.baseBill)} a month. After installation, about ${peso(cur.billNoNM)} until the utility approves net metering, then about ${peso(cur.billNM)}.</li><li>Net metering is approved by the utility, not by us. We prepare and track the papers.</li><li>Output is lower in the wet season, June to October, by up to ${pct(1 - Math.min.apply(null, M.SEASON))} in the weakest months.</li></ul>
-      <p style="margin-top:22px"><button class="line" data-act="go" data-s="3">Back</button> <button class="alt" data-act="submitEst">${changed ? 'Send my design to the engineer' : 'Send this template to the engineer'}</button></p>`;
+      <p style="margin-top:22px"><button class="line" data-act="go" data-s="3">Back</button> <button class="alt" data-act="submitEst">${changed ? 'Send my design to the engineer' : 'Send this template to the engineer'}</button></p></div>`;
   }
   // first-step preview: the house the customer is about to size, with their own bill beside it
   function previewHTML(E) {
@@ -242,15 +314,24 @@
   function redrawDesigner() { const el = $('#designer'); if (el) el.innerHTML = designerHTML(); updateStatement(); UI.est.pop = null; }
 
   function myProjectView() {
-    const p = P(S.myProject); if (!p) return '<p>No project yet. Start with an estimate.</p>';
-    let h = `<h1>My project — ${esc(p.name)}</h1><p class="sub">${p.id} · ${esc(p.city)} · ${p.utility} · ${M.TIERS[p.tier].label} design</p><div class="card">${pills(p)}</div>`;
-    if (p.stage === 1) h += '<div class="card"><h2>Waiting for site assessment</h2><p>Our engineer will visit, check roof and wiring, and prepare your final proposal. We will notify you.</p></div>';
-    if (p.stage === 2) h += '<div class="card"><h2>Quotation being prepared</h2><p>Your quotation is being sized and reviewed by our engineer and manager.</p></div>';
-    if (p.stage === 3) h += p.released ? `<div class="card"><h2>Your quotation is ready</h2><div class="metric"><span>Indicative estimate</span><b>${peso(p.indicative.cost)}</b></div><div class="metric"><span>Final quotation</span><b>${peso(p.final.total)} (${p.quoteDelta >= 0 ? '+' : ''}${(p.quoteDelta * 100).toFixed(1)}%)</b></div>
-      <p class="muted small">Expected bill: ${peso(p.size.billNoNM)} before net metering, ${peso(p.size.billNM)} after approval.</p><button class="alt" data-act="accept" data-id="${p.id}">Accept quotation</button></div>` : '<div class="card"><h2>Quotation awaiting release</h2><p>Approved internally; our staff will release it to you shortly.</p></div>';
-    if (p.permit) h += `<div class="card"><h2>Your requirements</h2><p class="muted small">Upload scans or photos instead of handing in paper. We read them to prefill your permit forms (prototype: upload is simulated).</p>
+    const p = P(S.myProject); if (!p) return empty('No project yet', 'Start with a free estimate and we will build your project from it.', '<a class="btn alt" href="#/estimate">Plan my solar system</a>');
+    const nxt = p.stage === 1 ? 'We are scheduling a site visit. An engineer will check your roof and wiring.' : p.stage === 2 ? 'Our engineer and manager are preparing your final quotation.' : p.stage === 3 ? (p.released ? 'Your quotation is ready. Review it below and accept when you are comfortable.' : 'Your quotation is approved and will be released to you shortly.') : p.stage === 6 ? 'Your system is running.' : (p.permit && !p.permit.submitted ? 'Upload the remaining documents so we can submit your permit papers.' : 'Permits and installation are moving in parallel. We will message you at each step.');
+    let h = `<div class="ph"><div><h1>Hello, ${esc(p.name.split(' ')[0])}</h1><p class="sub">${p.id} · ${esc(p.city)} · ${p.utility} · ${M.TIERS[p.tier].label} design</p></div></div>
+      <div class="card dh">${tracker(p)}<p class="nextup"><b>What happens next</b>${esc(nxt)}</p></div>`;
+    if (p.stage === 3 && p.released) {
+      const d = p.quoteDelta;
+      h += `<div class="card quote"><div class="q-h"><span class="chip ok">Proposal ready</span><h2>Your final quotation</h2></div>
+        <div class="q-grid"><div class="q-price"><span>Final price</span><b>${peso(p.final.total)}</b><small>${d >= 0 ? '+' : ''}${(d * 100).toFixed(1)}% vs your estimate of ${peso(p.indicative.cost)}</small></div>
+        <div class="q-list"><div><span>System</span><b>${kw1(p.size.kw)} kW${p.size.batt ? ' + ' + p.size.batt + ' kWh battery' : ''}</b></div><div><span>Bill until net metering</span><b>${peso(p.size.billNoNM)}</b></div><div><span>Bill after net metering</span><b>${peso(p.size.billNM)}</b></div></div></div>
+        <p class="muted small">Net metering is approved by the utility, not by us. We prepare and track the papers.</p><button class="alt" data-act="accept" data-id="${p.id}">Accept quotation</button></div>`;
+    } else if (p.stage === 3) h += `<div class="card">${empty('Quotation awaiting release', 'It is approved internally. Our staff will release it to you shortly.')}</div>`;
+    if (p.permit) {
+      const s = permitStats(p);
+      h += `<div class="card"><div class="ph" style="margin:0"><h2>Your requirements</h2><span class="chip ${s.ok === s.total ? 'ok' : 'warn'}">${s.ok} of ${s.total} received</span></div><div class="bar" style="margin:6px 0 10px"><i style="width:${s.ok / s.total * 100}%;background:var(--green)"></i></div>
+      <p class="muted small">Upload scans or photos instead of handing in paper. We read them to prefill your permit forms. Uploads are simulated in this demo.</p>
       <table>${p.permit.items.map((i, k) => `<tr><td>${esc(i.n)}<div class="muted small">${i.track}</div></td><td>${statusChip(i)}</td><td class="right">${i.status !== 'ok' ? `<button class="line" data-act="upload" data-id="${p.id}" data-k="${k}">Upload</button>` : ''}</td></tr>`).join('')}</table>
-      ${p.permit.submitted ? '<p class="small muted">Submitted to the utility/LGU. Approval time is outside our control; we will keep you updated.</p>' : ''}</div>`;
+      ${p.permit.submitted ? '<p class="small muted">Submitted to the utility or LGU. Their approval time is outside our control; we will keep you updated.</p>' : ''}</div>`;
+    }
     if (p.stage === 6) h += '<div class="card"><h2>Your system is running</h2><p>See how it is performing, and why your bill is what it is, under <a href="#/insights">My bill insights</a>.</p></div>';
     return h;
   }
@@ -278,44 +359,65 @@
     return o;
   }
 
+
+  const STAGES = ['Site assessment', 'Quotation', 'Release and accept', 'Permits', 'Installation', 'After-sales'];
+  function stageLabel(p) { if (p.stage <= 3) return STAGES[p.stage - 1]; if (p.stage === 6) return 'After-sales'; return p.permit && p.permit.submitted && !p.permit.approved && p.install && !p.install.qa ? 'Installation, permit with utility' : 'Permits and installation'; }
+  function stageStates(p) {
+    return STAGES.map((l, i) => { const n = i + 1; let c = '', x = '';
+      if (n <= 3) c = p.stage > n ? 'done' : p.stage === n ? 'now' : '';
+      else if (n === 4) { if (p.permit) { c = p.permit.approved ? 'done' : p.permit.submitted ? 'wait' : 'now'; if (c === 'wait') x = 'Awaiting utility'; } }
+      else if (n === 5) { if (p.install) c = p.install.qa ? 'done' : 'now'; }
+      else c = p.stage === 6 ? 'now' : '';
+      return { l, c, x, n }; });
+  }
+  function tracker(p) {
+    return `<ol class="trk" aria-label="Project progress">${stageStates(p).map(s => `<li class="${s.c}"><i>${s.c === 'done' ? '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"/></svg>' : s.n}</i><span>${s.l}${s.x ? `<small>${s.x}</small>` : ''}</span></li>`).join('')}</ol>`;
+  }
+  function dots(p) { return `<span class="dots" title="${esc(stageLabel(p))}">${stageStates(p).map(s => `<i class="${s.c}"></i>`).join('')}</span>`; }
+  function ago(t) { if (!t) return ''; const m = Math.round((Date.now() - t) / 60000); if (m < 1) return 'just now'; if (m < 60) return m + ' min ago'; const h = Math.round(m / 60); if (h < 24) return h + ' h ago'; return Math.round(h / 24) + ' d ago'; }
+  const empty = (t, s, a) => `<div class="empty"><svg width="64" height="64" viewBox="0 0 64 64" fill="none" aria-hidden="true"><circle cx="32" cy="32" r="12" fill="#FFB800"/><g stroke="#FFB800" stroke-width="3.5" stroke-linecap="round"><path d="M32 8v6M32 50v6M8 32h6M50 32h6M15 15l4 4M45 45l4 4M49 15l-4 4M19 45l-4 4"/></g></svg><h3>${t}</h3><p>${s}</p>${a || ''}</div>`;
+
   function pipelineView() {
-    const mine = { staff: [1, 3, 4], engineer: [1, 2], manager: [2], qa: [4], management: [6] }[S.role] || [];
-    const isWait = p => { const g = GATES[p.stage]; return g && g.need.includes(S.role) && !p.approvals[p.stage].includes(S.role) && !(p.stage === 3 && !p.released && S.role !== 'staff'); };
-    const nWait = S.projects.filter(isWait).length, nFlow = S.projects.filter(p => p.stage >= 4 && p.stage < 6).length, nFlag = S.projects.filter(p => flags(p).length).length;
-    let h = `<h1>Project pipeline</h1><p class="sub">Every project has one verified record. Highlighted rows are waiting on <b>${ROLES[S.role]}</b>.</p>
-      <div class="kstrip" role="list"><div role="listitem"><b>${nWait}</b><span>waiting on you</span></div><div role="listitem"><b>${nFlow}</b><span>in permits or installation</span></div><div role="listitem"><b>${nFlag}</b><span>with open flags</span></div><div role="listitem"><b>${S.projects.length}</b><span>projects in total</span></div></div>
-      <div class="card tablecard"><table><tr><th>Project</th><th>Location</th><th>Design</th><th>Progress</th><th>Attention</th></tr>`;
-    S.projects.slice().sort((a, b) => a.stage - b.stage).forEach(p => {
-      const g = GATES[p.stage], waiting = g && g.need.includes(S.role) && !p.approvals[p.stage].includes(S.role) && !(p.stage === 3 && !p.released && S.role !== 'staff');
-      const fl = flags(p).length; h += `<tr class="click" data-act="open" data-id="${p.id}" ${waiting ? 'style="background:var(--amber-soft)"' : ''}><td><b>${esc(p.name)}</b><div class="muted small">${p.id}</div></td><td>${esc(p.city)}<div class="muted small">${p.utility}</div></td><td>${M.TIERS[p.tier].label}<div class="muted small">${kw1(p.size.kw)} kW${p.size.batt ? ' + ' + p.size.batt + ' kWh' : ''}</div></td><td>${pills(p)}</td><td>${waiting ? '<span class="chip warn">Your approval</span> ' : ''}${fl ? `<span class="chip bad">${fl} flag${fl > 1 ? 's' : ''}</span>` : '<span class="chip ok">Clear</span>'}</td></tr>`;
-    });
-    return h + '</table></div>';
+    const nW = S.projects.filter(isWait).length, nFlow = S.projects.filter(p => p.stage >= 4 && p.stage < 6).length, nFlag = S.projects.filter(p => flags(p).length).length;
+    const q = (UI.q || '').trim().toLowerCase(), F = { all: () => true, wait: isWait, flag: p => flags(p).length > 0, flow: p => p.stage >= 4 && p.stage < 6 };
+    const rows = S.projects.slice().sort((x, y) => (isWait(y) - isWait(x)) || x.stage - y.stage).filter(p => (F[UI.pf] || F.all)(p) && (!q || [p.name, p.id, p.city, p.utility].join(' ').toLowerCase().includes(q)));
+    const chip = (k, l, n) => `<button class="fchip ${UI.pf === k ? 'on' : ''}" data-act="pf" data-f="${k}" aria-pressed="${UI.pf === k}">${l}${n != null ? `<i>${n}</i>` : ''}</button>`;
+    let h = `<div class="ph"><div><h1>Project pipeline</h1><p class="sub">Every project has one verified record. Rows marked <b>Your approval</b> are waiting on you as ${esc(ROLES[S.role].split(' (')[0].toLowerCase())}.</p></div></div>
+      <div class="kstrip" role="list"><div role="listitem"><b>${nW}</b><span>waiting on you</span></div><div role="listitem"><b>${nFlow}</b><span>in permits or installation</span></div><div role="listitem"><b>${nFlag}</b><span>with open flags</span></div><div role="listitem"><b>${S.projects.length}</b><span>projects in total</span></div></div>
+      <div class="fbar" role="group" aria-label="Filter projects">${chip('all', 'All', S.projects.length)}${chip('wait', 'Waiting on me', nW)}${chip('flag', 'Flagged', nFlag)}${chip('flow', 'In progress', nFlow)}${q ? `<span class="muted small" style="margin-left:auto">Showing results for “${esc(UI.q)}” <button class="ghost" data-act="clearq">Clear</button></span>` : ''}</div>`;
+    if (!rows.length) return h + `<div class="card">${empty('No projects match', q ? 'Try a different name, city or project number.' : 'Nothing in this view right now.', '<button class="line" data-act="pf" data-f="all">Show all projects</button>')}</div>`;
+    h += `<div class="card tablecard"><table class="ptable"><thead><tr><th>Project</th><th>Location</th><th>Design</th><th>Progress</th><th>Attention</th></tr></thead><tbody>`;
+    rows.forEach(p => { const w = isWait(p), fl = flags(p).length;
+      h += `<tr class="click ${w ? 'mine' : ''}" tabindex="0" data-act="open" data-id="${p.id}"><td><div class="who2">${avatar(p.name)}<span><b>${esc(p.name)}</b><small>${p.id}</small></span></div></td><td>${esc(p.city)}<small class="sm">${p.utility}</small></td><td>${M.TIERS[p.tier].label}<small class="sm">${kw1(p.size.kw)} kW${p.size.batt ? ' + ' + p.size.batt + ' kWh' : ''}</small></td><td>${dots(p)}<small class="sm">${esc(stageLabel(p))}</small></td><td>${w ? '<span class="chip warn">Your approval</span> ' : ''}${fl ? `<span class="chip bad">${fl} flag${fl > 1 ? 's' : ''}</span>` : w ? '' : '<span class="chip ok">Clear</span>'}</td></tr>`; });
+    return h + '</tbody></table></div>';
   }
 
   function detailView(id) {
     const p = P(id); if (!p) return '<p>Not found.</p>';
-    let h = `<p><a href="#/pipeline">← Pipeline</a></p><h1>${esc(p.name)} <span class="chip blue">${p.id}</span></h1><p class="sub">${esc(p.city)} · ${p.utility} · ${M.TIERS[p.tier].label} design (${kw1(p.size.kw)} kW${p.size.batt ? ', ' + p.size.batt + ' kWh battery' : ''})</p><div class="card">${pills(p)}</div>`;
+    const H = { ov: '', q: '', pm: '', in: '', ac: '' }, nm = esc(p.name), hdr = `<p class="crumb"><a href="#/pipeline">Project pipeline</a> / ${nm}</p><div class="dh card"><div class="dh-t">${avatar(p.name, 56)}<div><h1>${nm}</h1><p class="sub" style="margin:0">${p.id} · ${esc(p.city)} · ${p.utility} · ${M.TIERS[p.tier].label} design, ${kw1(p.size.kw)} kW${p.size.batt ? ' + ' + p.size.batt + ' kWh battery' : ''}</p></div></div>${tracker(p)}</div>`;
     const g = GATES[p.stage];
     if (g) { const done = p.approvals[p.stage], can = g.need.includes(S.role) && !done.includes(S.role) && !(p.stage === 3 && p.released);
-      h += `<div class="card"><h3>Human approval gate — stage ${p.stage}</h3><p>${g.label}.</p><p>${g.need.map(r => `<span class="chip ${done.includes(r) ? 'ok' : 'warn'}">${done.includes(r) ? '✓ ' : ''}${ROLES[r].split(' (')[0]}</span>`).join(' ')}</p>
+      H.ov += `<div class="card"><h3>Approvals needed — stage ${p.stage}</h3><p>${g.label}.</p><p>${g.need.map(r => `<span class="chip ${done.includes(r) ? 'ok' : 'warn'}">${done.includes(r) ? '✓ ' : ''}${ROLES[r].split(' (')[0]}</span>`).join(' ')}</p>
         ${p.stage === 3 && p.released ? '<p class="muted">Released. Waiting for the customer to accept.</p>' : `<button class="alt" data-act="approve" data-id="${p.id}" ${can ? '' : 'disabled'}>${can ? 'Approve as ' + ROLES[S.role].split(' (')[0] : 'Waiting on other role(s)'}</button>`}</div>`; }
-    const f = flags(p); h += `<div class="card"><h3>AI agent flags</h3>${f.length ? f.map(x => `<div class="flag ${x.k}"><b class="who">Agent</b>${x.t}</div>`).join('') : '<span class="chip ok">Nothing flagged</span>'}</div>`;
-    h += `<div class="card"><h3>Assessment record</h3><div class="grid g4"><div><span class="muted small">Bill-derived usage</span><div><b>${Math.round(p.kwh)} kWh/mo</b></div></div><div><span class="muted small">Appliance-derived</span><div><b>${Math.round(p.appKwh)} kWh/mo</b></div></div><div><span class="muted small">Daytime share</span><div><b>${pct(p.dayShare)}</b></div></div><div><span class="muted small">Rate</span><div><b>₱${p.rate}/kWh</b></div></div></div><p class="small muted" style="margin:10px 0 0">Customer design: ${p.size.panels} panels (${kw1(p.size.kw)} kW), ${p.size.batt ? p.size.batt + ' kWh battery' : 'no battery'}${p.size.mon ? ', monitoring' : ''}${esc(p.note || '')}</p></div>`;
+    const f = flags(p); H.ov += `<div class="card"><h3>Automated checks</h3>${f.length ? f.map(x => `<div class="flag ${x.k}"><b class="who">System</b>${x.t}</div>`).join('') : '<span class="chip ok">Nothing flagged</span>'}</div>`;
+    H.ov += `<div class="card"><h3>Assessment record</h3><div class="grid g4"><div><span class="muted small">Bill-derived usage</span><div><b>${Math.round(p.kwh)} kWh/mo</b></div></div><div><span class="muted small">Appliance-derived</span><div><b>${Math.round(p.appKwh)} kWh/mo</b></div></div><div><span class="muted small">Daytime share</span><div><b>${pct(p.dayShare)}</b></div></div><div><span class="muted small">Rate</span><div><b>₱${p.rate}/kWh</b></div></div></div><p class="small muted" style="margin:10px 0 0">Customer design: ${p.size.panels} panels (${kw1(p.size.kw)} kW), ${p.size.batt ? p.size.batt + ' kWh battery' : 'no battery'}${p.size.mon ? ', monitoring' : ''}${esc(p.note || '')}</p></div>`;
     if (p.stage >= 2 && p.final) { const t = p.final.total, bt = p.size.batt * M.BATT_PRICE, rem = Math.max(0, t - bt);
       const bom = [['Solar panels (550 W) × ' + p.size.panels, rem * 0.42], [p.size.batt ? 'Hybrid inverter' : 'Grid-tied inverter', rem * 0.2], ...(p.size.batt ? [['Battery ' + p.size.batt + ' kWh', bt]] : []), ['Mounting & racking', rem * 0.1], ['Protection, cabling & BOS', rem * 0.1], ['Installation labor & commissioning', rem * 0.18]];
-      h += `<div class="card"><h3>Quote &amp; bill of materials</h3><div class="metric"><span>Indicative estimate (customer saw)</span><b>${peso(p.indicative.cost)}</b></div><div class="metric"><span>Final quotation</span><b>${peso(t)} (${p.quoteDelta >= 0 ? '+' : ''}${(p.quoteDelta * 100).toFixed(1)}%)</b></div><table style="margin-top:8px">${bom.map(b => `<tr><td>${b[0]}</td><td class="right">${peso(b[1])}</td></tr>`).join('')}</table></div>`; }
-    if (p.permit) h += permitCard(p);
-    if (p.install) h += installCard(p);
+      H.q += `<div class="card"><h3>Quote &amp; bill of materials</h3><div class="metric"><span>Indicative estimate (customer saw)</span><b>${peso(p.indicative.cost)}</b></div><div class="metric"><span>Final quotation</span><b>${peso(t)} (${p.quoteDelta >= 0 ? '+' : ''}${(p.quoteDelta * 100).toFixed(1)}%)</b></div><table style="margin-top:8px">${bom.map(b => `<tr><td>${b[0]}</td><td class="right">${peso(b[1])}</td></tr>`).join('')}</table></div>`; }
+    if (p.permit) H.pm += permitCard(p);
+    if (p.install) H.in += installCard(p);
     if (p.stage === 6) { const s = D.series(p), l = s[s.length - 1];
-      h += `<div class="card"><h3>After-sales &amp; KPIs</h3><div class="grid g4"><div><span class="muted small">Latest promised</span><div><b>${peso(l.promised)}</b></div></div><div><span class="muted small">Latest actual</span><div><b>${peso(l.actual)}</b></div></div><div><span class="muted small">Net metering</span><div><b>${p.nmFrom != null ? 'Approved' : 'Pending'}</b></div></div><div><span class="muted small">Ticket</span><div><b>${p.ticket ? 'Open' : 'None'}</b></div></div></div>${monthChart(s)}<button class="alt" data-act="action" data-id="${p.id}" ${S.role === 'management' && !p.actionApproved ? '' : 'disabled'}>${p.actionApproved ? 'Action plan approved' : 'Management: approve action plan'}</button></div>`; }
-    h += `<div class="card"><h3>Audit log</h3>${p.log.slice().reverse().map(x => `<div class="small"><b>${esc(x.who)}</b> — ${esc(x.t)}</div>`).join('')}</div>`;
-    return h;
+      H.ov += `<div class="card"><h3>After-sales &amp; KPIs</h3><div class="grid g4"><div><span class="muted small">Latest promised</span><div><b>${peso(l.promised)}</b></div></div><div><span class="muted small">Latest actual</span><div><b>${peso(l.actual)}</b></div></div><div><span class="muted small">Net metering</span><div><b>${p.nmFrom != null ? 'Approved' : 'Pending'}</b></div></div><div><span class="muted small">Ticket</span><div><b>${p.ticket ? 'Open' : 'None'}</b></div></div></div>${monthChart(s)}<button class="alt" data-act="action" data-id="${p.id}" ${S.role === 'management' && !p.actionApproved ? '' : 'disabled'}>${p.actionApproved ? 'Action plan approved' : 'Management: approve action plan'}</button></div>`; }
+    H.ac += `<div class="card"><h3>Activity</h3><ol class="tl">${p.log.slice().reverse().map(x => `<li><i></i><div><b>${esc(x.who)}</b> ${esc(x.t)}${x.at ? `<small>${ago(x.at)}</small>` : ''}</div></li>`).join('') || '<li><div class="muted">No activity yet.</div></li>'}</ol></div>`;
+    const tabs = [['ov', 'Overview', 1], ['q', 'Design and quote', !!H.q], ['pm', 'Permits', !!H.pm], ['in', 'Installation', !!H.in], ['ac', 'Activity', 1]].filter(x => x[2]);
+    const cur = tabs.find(x => x[0] === UI.tab['d' + id]) ? UI.tab['d' + id] : 'ov';
+    return hdr + `<div class="tabs" role="tablist">${tabs.map(x => `<button role="tab" aria-selected="${x[0] === cur}" class="${x[0] === cur ? 'on' : ''}" data-act="dtab" data-id="${id}" data-t="${x[0]}">${x[1]}</button>`).join('')}</div><div role="tabpanel">${H[cur]}</div>`;
   }
   function permitCard(p) {
     const s = permitStats(p), ready = !s.miss.length && !s.pend.length, staff = S.role === 'staff';
     return `<div class="card"><h3>Permit package <span class="muted small">— ${s.ok}/${s.total} complete · prepared in parallel with installation</span></h3><div class="bar" style="margin:8px 0"><i style="width:${s.ok / s.total * 100}%;background:var(--green)"></i></div>
       <table>${p.permit.items.map((i, k) => `<tr><td>${esc(i.n)}<div class="muted small">${i.track}</div></td><td>${statusChip(i)}</td><td class="right">${staff && i.status !== 'ok' && !p.permit.submitted ? `<button class="line" data-act="received" data-id="${p.id}" data-k="${k}">Mark received</button>` : ''}</td></tr>`).join('')}</table>
-      <p>${p.permit.submitted ? (p.permit.approved ? '<span class="chip ok">Approved by utility/LGU</span>' : `<span class="chip warn">Submitted — awaiting utility/LGU (outside system control)</span> <button class="line" data-act="utilOk" data-id="${p.id}" ${staff ? '' : 'disabled'}>Record approval (demo)</button>`) : `<button class="alt" data-act="submitPermit" data-id="${p.id}" ${staff && ready ? '' : 'disabled'}>Staff: confirm &amp; submit package</button> <span class="muted small">${ready ? '' : 'Resolve missing/pending items first.'}</span>`}</p></div>`;
+      <p>${p.permit.submitted ? (p.permit.approved ? '<span class="chip ok">Approved by utility/LGU</span>' : `<span class="chip warn">Submitted. Waiting for the utility or LGU</span> <button class="line" data-act="utilOk" data-id="${p.id}" ${staff ? '' : 'disabled'}>Record utility approval</button>`) : `<button class="alt" data-act="submitPermit" data-id="${p.id}" ${staff && ready ? '' : 'disabled'}>Staff: confirm &amp; submit package</button> <span class="muted small">${ready ? '' : 'Resolve missing/pending items first.'}</span>`}</p></div>`;
   }
   function techScores(p) {
     return D.TECHS.map(t => { const need = p.size.batt ? 'battery' : 'grid', fit = t.skills.includes(need) ? 1 : 0.3, avail = Math.max(0, 1 - t.freeInDays / 7), prox = t.base === p.city ? 1 : t.region === D.regionOf(p.city) ? 0.7 : 0.2;
@@ -331,12 +433,12 @@
 
   function permitsView() {
     const list = S.projects.filter(p => p.permit);
-    return `<h1>Permit tracker</h1><p class="sub">Preparation, completeness and deadlines. Approval itself is done by the utility/LGU and is out of scope.</p><div class="card"><table><tr><th>Project</th><th>Utility</th><th>Completeness</th><th>Open items</th><th>Status</th></tr>${list.map(p => { const s = permitStats(p);
-      return `<tr class="click" data-act="open" data-id="${p.id}"><td><b>${esc(p.name)}</b><div class="muted small">${p.id}</div></td><td>${p.utility}</td><td style="min-width:140px"><div class="bar"><i style="width:${s.ok / s.total * 100}%;background:var(--green)"></i></div><span class="small muted">${s.ok}/${s.total}</span></td><td class="small">${s.miss.map(i => esc(i.n)).concat(s.pend.map(i => esc(i.n) + ' (pending)')).slice(0, 3).join('<br>') || '—'}</td><td>${p.permit.approved ? '<span class="chip ok">Approved</span>' : p.permit.submitted ? '<span class="chip warn">Awaiting utility</span>' : '<span class="chip blue">Preparing</span>'}</td></tr>`; }).join('')}</table></div>`;
+    return `<h1>Permit tracker</h1><p class="sub">Preparation, completeness and deadlines. Approval itself comes from the utility or LGU.</p><div class="card"><table class="ptable"><thead><tr><th>Project</th><th>Utility</th><th>Completeness</th><th>Open items</th><th>Status</th></tr></thead><tbody>${list.map(p => { const s = permitStats(p);
+      return `<tr class="click" data-act="open" data-id="${p.id}"><td><div class="who2">${avatar(p.name)}<span><b>${esc(p.name)}</b><small>${p.id}</small></span></div></td><td>${p.utility}</td><td style="min-width:140px"><div class="bar"><i style="width:${s.ok / s.total * 100}%;background:var(--green)"></i></div><span class="small muted">${s.ok}/${s.total}</span></td><td class="small">${s.miss.map(i => esc(i.n)).concat(s.pend.map(i => esc(i.n) + ' (pending)')).slice(0, 3).join('<br>') || '—'}</td><td>${p.permit.approved ? '<span class="chip ok">Approved</span>' : p.permit.submitted ? '<span class="chip warn">Awaiting utility</span>' : '<span class="chip blue">Preparing</span>'}</td></tr>`; }).join('')}</tbody></table>${list.length ? '' : empty('No permits yet','Permits start once a customer accepts a quote.')}</div>`;
   }
   function workordersView() {
     const me = 'R. Dizon', list = S.projects.filter(p => p.install && (S.role !== 'technician' || p.install.tech === me));
-    return `<h1>Work orders</h1><p class="sub">${S.role === 'technician' ? 'Your assigned addresses and milestones.' : 'All installations and who is responsible for which address.'}</p><div class="card"><table><tr><th>Project / address</th><th>Technician</th><th>Milestones</th><th>Status</th></tr>${list.map(p => `<tr class="click" data-act="open" data-id="${p.id}"><td><b>${esc(p.name)}</b><div class="muted small">${esc(p.city)}</div></td><td>${p.install.tech || '<span class="chip warn">Unassigned</span>'}</td><td>${p.install.milestones.filter(m => m.done).length}/${p.install.milestones.length}</td><td>${p.install.qa ? '<span class="chip ok">Turned over</span>' : '<span class="chip blue">In progress</span>'}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">None assigned.</td></tr>'}</table></div>`;
+    return `<h1>Work orders</h1><p class="sub">${S.role === 'technician' ? 'Your assigned addresses and milestones.' : 'All installations and who is responsible for which address.'}</p><div class="card"><table class="ptable"><tr><th>Project / address</th><th>Technician</th><th>Milestones</th><th>Status</th></tr>${list.map(p => `<tr class="click" data-act="open" data-id="${p.id}"><td><div class="who2">${avatar(p.name)}<span><b>${esc(p.name)}</b><small>${esc(p.city)}</small></span></div></td><td>${p.install.tech ? '<span class="who2">'+avatar(p.install.tech,26)+esc(p.install.tech)+'</span>' : '<span class="chip warn">Unassigned</span>'}</td><td>${p.install.milestones.filter(m => m.done).length}/${p.install.milestones.length}</td><td>${p.install.qa ? '<span class="chip ok">Turned over</span>' : '<span class="chip blue">In progress</span>'}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">None assigned.</td></tr>'}</table></div>`;
   }
 
   // ---------- analytics ----------
@@ -389,13 +491,16 @@
 
   // ---------- router ----------
   function allowed() { return Object.keys(ROUTES).filter(k => ROUTES[k].roles.includes(S.role)); }
-  function render() {
+  function render() { UI.menu = null; renderChrome(); renderView(); }
+  function renderView() {
+    if (!S.authed) { document.title = 'Sign in | SolarFlow'; $('#view').innerHTML = loginView(); return; }
     const hash = location.hash.replace(/^#\/?/, '').split('/'); let route = hash[0] || allowed()[0], arg = hash[1];
     if (route === 'project') { if (S.role === 'customer') route = 'myproject'; } else if (!allowed().includes(route)) { location.hash = '#/' + allowed()[0]; return; }
-    $('#nav').innerHTML = allowed().map(k => `<a href="#/${k}" class="${k === route || (route === 'project' && k === 'pipeline') ? 'on' : ''}">${ROUTES[k].label}</a>`).join('');
     const views = { estimator: estimatorView, myproject: myProjectView, insights: insightsView, pipeline: pipelineView, permits: permitsView, workorders: workordersView, analytics: analyticsView, spec: specView, users: usersView, project: () => detailView(arg) };
+    const key = route + (arg || '') + (route === 'estimator' && UI.est ? ':' + UI.est.step : '');
     $('#view').innerHTML = (views[route] || pipelineView)();
-    $('#roleSel').value = S.role; updateStatement();
+    const v = $('#view'); if (UI.lastKey !== key) { v.classList.remove('view-in'); void v.offsetWidth; v.classList.add('view-in'); UI.lastKey = key; }
+    document.title = ((ROUTES[route] || ROUTES.pipeline).label) + ' | SolarFlow'; updateStatement();
   }
 
   // ---------- actions ----------
@@ -406,7 +511,14 @@
     else if (p.stage === 3) { p.released = true; log(p, 'Quotation released to customer', 'System'); }
   }
   const A = {
-    reset() { if (confirm('Reset all demo data?')) { S = fresh(); UI = { tab: {}, est: null, insProject: null, rainy: false }; save(); location.hash = '#/estimator'; render(); } },
+    reset() { UI.menu = null; renderChrome(); modal({ title: 'Reset demo data?', body: 'This restores the original sample projects and clears anything you added.', ok: 'Reset', fn: () => { S = fresh(); S.authed = false; UI = { tab: {}, est: null, insProject: null, rainy: false, menu: null, q: '', pf: 'all' }; save(); location.hash = '#/'; render(); toast('Demo data restored'); } }); },
+    mclose() { $('#modal').innerHTML = ''; UI.mok = null; },
+    mok() { const f = UI.mok; A.mclose(); if (f) f(); },
+    login(d) { S.authed = true; S.role = d.r; UI.menu = null; UI.est = null; save(); location.hash = '#/' + allowed()[0]; render(); window.scrollTo(0, 0); },
+    logout() { S.authed = false; UI.menu = null; save(); location.hash = '#/'; render(); window.scrollTo(0, 0); },
+    menu(d) { UI.menu = UI.menu === d.m ? null : d.m; renderChrome(); },
+    pf(d) { UI.pf = d.f; renderView(); },
+    clearq() { UI.q = ''; $('#q').value = ''; renderView(); },
     calc() { const E = UI.est; E.err = '';
       if (!(+E.bill >= 1000)) { E.err = 'Enter your average monthly bill, at least ₱1,000, so we can size the system.'; render(); const i = $('[data-b=bill]'); if (i) i.focus(); return; }
       if (!E.apps.some(a => a.on)) { E.err = 'Tick at least one appliance you use, so we can estimate daytime and evening use.'; render(); return; }
@@ -439,7 +551,8 @@
     action(d) { const p = P(d.id); p.actionApproved = true; log(p, 'Action plan approved'); save(); render(); },
     ticket(d) { P(d.id).ticket = true; save(); toast('Ticket opened'); render(); },
     weather(d) { UI.rainy = d.w === '1'; render(); },
-    antab(d) { UI.tab.an = d.t; render(); }
+    antab(d) { UI.tab.an = d.t; render(); },
+    dtab(d) { UI.tab['d' + d.id] = d.t; renderView(); }
   };
   function recompute() { const E = UI.est; E.res = {}; ['low', 'value', 'high'].forEach(t => E.res[t] = M.size(t, E.kwh, E.dayShare, E.rate)); const roof = (E.cfg && E.cfg.roof) || 'gable'; E.tpl = M.template(E.tier, E.kwh); E.tpl.panels = Math.min(E.tpl.panels, Scene.CAPS[roof]); E.cfg = Object.assign({}, E.tpl, { roof }); }
 
@@ -452,9 +565,10 @@
     if (b === 'city') render();
   });
   document.addEventListener('input', e => { const t = e.target; if (t.dataset && t.dataset.act === 'hour') { UI.est.hour = +t.value; updateDay(); const lb = $('.scene-slider b'); if (lb) lb.textContent = hr12(UI.est.hour); } });
-  document.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.classList && e.target.classList.contains('opt')) e.target.click(); });
-  $('#roleSel').innerHTML = Object.keys(ROLES).map(k => `<option value="${k}">${ROLES[k]}</option>`).join('');
-  $('#roleSel').addEventListener('change', e => { S.role = e.target.value; save(); location.hash = '#/' + allowed()[0]; render(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.classList && (e.target.classList.contains('opt') || e.target.classList.contains('click'))) e.target.click(); });
+  document.addEventListener('click', e => { if (UI.menu && !e.target.closest('.menuwrap')) { UI.menu = null; renderChrome(); } });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') { if ($('#modal').innerHTML) A.mclose(); else if (UI.menu) { UI.menu = null; renderChrome(); } } });
+  $('#q').addEventListener('input', e => { UI.q = e.target.value; if (!/^#\/pipeline/.test(location.hash)) location.hash = '#/pipeline'; else renderView(); });
   window.addEventListener('hashchange', render);
   render();
 })();
