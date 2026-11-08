@@ -1,6 +1,6 @@
 /* app.js — UI for the SolarFlow prototype. No build step; open index.html or serve the folder. */
 (function () {
-  const M = MODEL, D = DATA;
+  const M = MODEL, D = DATA, CP = CPM;
   const $ = (s, el) => (el || document).querySelector(s);
   const $$ = (s, el) => Array.from((el || document).querySelectorAll(s));
   const peso = n => (n < 0 ? '−₱' : '₱') + Math.round(Math.abs(n)).toLocaleString('en-PH');
@@ -14,8 +14,9 @@
   const STAFF = ['staff', 'engineer', 'manager', 'qa', 'management'];
   const ROUTES = {
     estimator:  { label: 'Get an estimate', roles: ['customer'] },
+    priorities: { label: 'Delay priorities', roles: ['staff'] },
     myproject:  { label: 'My project', roles: ['customer'] },
-    insights:   { label: 'My bill insights', roles: ['customer'] },
+    insights:   { label: 'Bill insights', roles: ['customer'] },
     pipeline:   { label: 'Project pipeline', roles: STAFF },
     permits:    { label: 'Permit tracker', roles: ['staff', 'manager', 'management'] },
     workorders: { label: 'Work orders', roles: ['technician', 'qa', 'manager'] },
@@ -28,11 +29,11 @@
     2: { need: ['engineer', 'manager'], label: 'Engineer and manager approve the quotation' },
     3: { need: ['staff'], label: 'Staff release the quotation; the customer then accepts' }
   };
-  const KEY = 'solarflow_v5';
+  const KEY = 'solarflow_v6';
   let S = load(), UI = { tab: {}, est: null, insProject: null, rainy: false, menu: null, q: '', pf: 'all' };
 
-  function load() { try { const s = JSON.parse(localStorage.getItem(KEY)); if (s && s.projects) return s; } catch (e) {} return fresh(); }
-  function fresh() { return { authed: false, role: 'customer', projects: D.seedProjects(), myProject: 'P-1009', seq: 1012 }; }
+  function load() { try { const s = JSON.parse(localStorage.getItem(KEY)); if (s && s.projects) { s.approved = s.approved || {}; if (s.demoDay == null) s.demoDay = D.DEMO_DAY; return s; } } catch (e) {} return fresh(); }
+  function fresh() { return { authed: false, role: 'customer', projects: D.seedProjects(), myProject: 'P-1009', seq: 1012, demoDay: D.DEMO_DAY, approved: {} }; }
   function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} }
   const P = id => S.projects.find(p => p.id === id);
   function toast(m) { const t = $('#toast'); t.textContent = m; t.classList.add('show'); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('show'), 2400); }
@@ -169,11 +170,91 @@
       if (p.permit.submitted && !p.permit.approved) f.push({ k: 'info', t: 'Submitted. Approval comes from the utility or LGU; keep tracking the deadline.' });
     }
     if (p.install && !p.install.tech && !p.install.qa) f.push({ k: '', t: 'No technician assigned yet. See the suggestions below.' });
-    if (p.stage === 6) {
-      const s = D.series(p), last = s[s.length - 1], g = (last.actual - last.promised) / last.promised;
-      if (g > 0.2) { const top = Object.keys(last.parts).sort((a, b) => Math.abs(last.parts[b]) - Math.abs(last.parts[a]))[0]; f.push({ k: 'bad', t: `Variance warning: latest bill is ${pct(g)} above the promised bill. Largest driver: ${DRV[top].l.toLowerCase()} (${signed(last.parts[top])}).` }); }
-    }
+    if (zActive(p)) { const r = zen(p); if (r.slip > 0) f.push({ k: 'bad', t: `Zenith: projected install start is ${r.slip} day${r.slip > 1 ? 's' : ''} after the promised date. Holding it up: ${r.binding.name} (${r.binding.owner}).` }); }
     return f;
+  }
+
+
+  // ---------- Zenith: CPM analytics for delay prioritization ----------
+  const jobDay = p => S.demoDay - p.sched.acceptedDay;
+  function spOf(p) {
+    const tn = p.install && p.install.tech, t = tn ? D.TECHS.find(x => x.name === tn) : null;
+    return { promised: p.sched.promised, freeInDays: t ? Math.max(0, S.demoDay + t.freeInDays - p.sched.acceptedDay) : 0, hasBatt: p.size.batt > 0, dur: p.sched.dur, tech: tn, tasks: p.sched.tasks };
+  }
+  function zen(p) { return p.sched ? CP.schedule(spOf(p), jobDay(p)) : null; }
+  function zActive(p) { return !!p.sched && !(p.sched.tasks.T7 && p.sched.tasks.T7.done != null); }
+  const zSlip = p => zActive(p) ? zen(p).slip : -99, zMs = p => zActive(p) && zen(p).minSlack != null ? zen(p).minSlack : 99;
+  function zRank() { return CP.rank(S.projects.filter(zActive).map(p => ({ p, res: zen(p) }))); }
+  const promDate = p => D.dayDate(p.sched.acceptedDay + p.sched.promised);
+  const startDate = (p, r) => D.dayDate(p.sched.acceptedDay + r.start);
+  function riskChip(p) {
+    if (!zActive(p)) return ''; const r = zen(p);
+    if (r.slip > 0) return `<span class="chip bad">${r.slip} d late</span>`;
+    if (r.slip < 0) return `<span class="chip ok">${-r.slip} d early</span>`;
+    return r.minSlack != null && r.minSlack <= 2 ? `<span class="chip warn">On time, slack ${r.minSlack}</span>` : '<span class="chip ok">On time</span>';
+  }
+  function syncSched(p) {
+    if (!p.sched || !p.permit) return; const t = p.sched.tasks, d = jobDay(p), g = id => (t[id] = t[id] || {});
+    if (p.permit.submitted && g('T2').done == null) { g('T2').done = d; }
+    if (p.permit.submitted && g('T3').start == null) g('T3').start = g('T2').done;
+    if (p.permit.approved && g('T3').done == null) g('T3').done = d;
+    if (p.install && p.install.tech && g('T5').done == null) g('T5').done = d;
+    if (p.install) { const ms = p.install.milestones;
+      const ready = ['T3', 'T4', 'T5'].every(id => t[id] && t[id].done != null);
+      if (ms[3] && ms[3].done && g('T4').done == null) g('T4').done = d; // inverter & battery on site = materials delivered
+      if (ms.some(m => m.done) && ready && g('T6').start == null) g('T6').start = d;
+      if (ms.every(m => m.done) && g('T6').done == null && g('T6').start != null) g('T6').done = d;
+      if (p.install.qa && g('T7').done == null) { g('T7').done = d; if (g('T7').start == null) g('T7').start = g('T6').done != null ? g('T6').done : d; } }
+  }
+  function agentItems() {
+    const out = []; zRank().forEach(it => { const a = it.res.action; if (a && a.agent) { const key = it.p.id + ':' + a.kind + ':' + (it.res.binding ? it.res.binding.id : ''); out.push({ p: it.p, res: it.res, a, key, done: S.approved[key] != null }); } }); return out;
+  }
+  const canApprove = () => ['staff', 'engineer', 'manager'].includes(S.role);
+  const demoCtl = () => `<div class="card democtl"><div><b>Demo clock</b><span class="sim">simulated</span><div class="muted small">Day ${S.demoDay} (${D.dayDate(S.demoDay)}). Move time forward to watch delays change the ranking.</div></div><div class="row"><button class="line" data-act="adv" data-n="1">Advance 1 day</button><button class="line" data-act="adv" data-n="3">Advance 3 days</button><button class="line" data-act="resetclock">Reset clock</button></div></div>`;
+  function agentCard() {
+    const it = agentItems(), pend = it.filter(x => !x.done), dn = it.filter(x => x.done);
+    const row = x => `<li class="agrow"><div><span class="chip agent">Agent action</span> <b>${esc(x.p.name)}</b> <small>${x.p.id}</small><p>${esc(x.a.text)}</p></div><div>${x.done ? '<span class="chip ok">Approved · Day ' + S.approved[x.key] + '</span>' : `<button class="alt" data-act="agok" data-id="${x.p.id}" data-key="${esc(x.key)}" ${canApprove() ? '' : 'disabled title="Staff, engineers and managers can approve"'}>Approve</button>`}</div></li>`;
+    return `<div class="card"><h3>Agent actions <span class="sim">simulated, rule-based</span></h3><p class="muted small" style="margin:0 0 6px">The agent prepares each step from the CPM result and then stops. Nothing is sent or changed until a person presses Approve.</p>${pend.length ? `<ul class="aglist">${pend.map(row).join('')}</ul>` : '<p class="muted">No actions waiting for approval.</p>'}${dn.length ? `<h4>Approved</h4><ul class="aglist">${dn.map(row).join('')}</ul>` : ''}</div>`;
+  }
+  function zenithView() {
+    const rk = zRank(), late = rk.filter(x => x.res.slip > 0), tot = late.reduce((a, x) => a + x.res.slip, 0), sl = rk.map(x => x.res.minSlack).filter(v => v != null), old = rk.slice().sort((a, b) => a.p.sched.acceptedDay - b.p.sched.acceptedDay).map(x => x.p.name.split(' ')[0]);
+    const kp = (l, v, s) => `<div class="card kpi"><span class="muted small">${l}</span><div class="big">${v}</div><span class="muted small">${s}</span></div>`;
+    let h = demoCtl() + `<div class="grid g4">${kp('Jobs at risk', late.length + ' of ' + rk.length, 'projected after the promised start')}${kp('Total projected slip', tot + ' days', 'late jobs only')}${kp('Median slack', (sl.length ? med(sl) : 0) + ' days', 'smallest non-critical task, per job')}${kp('Agent actions waiting', agentItems().filter(x => !x.done).length, 'need a person to approve')}</div>`;
+    if (!rk.length) return h + `<div class="card">${empty('No jobs in permits or installation', 'Accepted quotations appear here with a CPM schedule.')}</div>`;
+    h += `<div class="card"><h2>Delay priorities <span class="sim">simulated data</span></h2><p class="muted small">Ranked by projected slip, then smallest slack, then days to the promised date. Work these top to bottom. First-in-first-out would be: ${esc(old.join(', '))}.</p>
+      <div class="tscroll"><table class="ptable zt"><thead><tr><th>#</th><th>Project</th><th>Promised start</th><th>Projected start</th><th>Slip</th><th>Holding it up</th><th>Smallest slack</th><th>Recommended action</th></tr></thead><tbody>${rk.map((x, i) => { const r = x.res;
+      return `<tr class="click" tabindex="0" data-act="zopen" data-id="${x.p.id}"><td><b>${i + 1}</b></td><td><b>${esc(x.p.name)}</b><small class="sm">${x.p.id} · ${x.p.utility}</small></td><td>${promDate(x.p)}</td><td>${startDate(x.p, r)}</td><td>${riskChip(x.p)}</td><td>${esc(r.binding.name)}<small class="sm">${esc(r.binding.owner)}${r.binding.external ? ' · outside our control' : ''}</small></td><td>${r.minSlack == null ? '–' : r.minSlack + ' d'}</td><td class="zact">${r.action.agent ? '<span class="chip agent">Agent drafts</span> ' : ''}${esc(r.action.text)}</td></tr>`; }).join('')}</tbody></table></div>
+      <p class="muted small" style="margin-top:8px">Limit: CPM follows task order and durations only. It does not model how many crews or staff are free, except the technician's next free day for the work order.</p></div>` + agentCard();
+    return h;
+  }
+  function prioritiesView() { return `<div class="ph"><div><h1>Delay priorities</h1><p class="sub">Zenith ranks jobs by how far past the promised install start they are projected to run.</p></div></div>` + zenithView(); }
+  function ganttSVG(p, r) {
+    const ids = CP.IDS, jd = jobDay(p), L = 168, W = 760, rh = 34, top = 28, maxD = Math.max(r.finish, p.sched.promised + 4, jd + 2) + 1, sx = d => L + d * (W - L - 12) / maxD, H = top + ids.length * rh + 12;
+    let g = `<svg class="gantt" viewBox="0 0 ${W} ${H}" role="img" aria-label="Schedule from acceptance: bars for each task, critical path in red, dashed bars show slack, vertical lines mark today and the promised install start">`;
+    for (let d = 0; d <= maxD; d += 2) g += `<line x1="${sx(d)}" y1="${top - 6}" x2="${sx(d)}" y2="${H - 8}" class="gg"/><text x="${sx(d)}" y="14" class="gt" text-anchor="middle">${d}</text>`;
+    ids.forEach((id, i) => { const t = r.tasks[id], y = top + i * rh;
+      g += `<text x="${L - 8}" y="${y + 19}" class="gl" text-anchor="end">${esc(t.name)}</text>`;
+      g += `<rect x="${sx(t.es)}" y="${y + 6}" width="${Math.max(3, sx(t.ef) - sx(t.es))}" height="20" rx="5" class="gb ${t.done ? 'done' : t.critical ? 'crit' : 'norm'}"><title>${esc(t.name)}: day ${t.es} to ${t.ef}, slack ${t.slack}</title></rect>`;
+      if (!t.critical && t.slack > 0) g += `<rect x="${sx(t.ef)}" y="${y + 6}" width="${sx(t.ef + t.slack) - sx(t.ef)}" height="20" rx="5" class="gs"/>`; });
+    g += `<line x1="${sx(p.sched.promised)}" y1="${top - 6}" x2="${sx(p.sched.promised)}" y2="${H - 8}" class="gp"/><text x="${sx(p.sched.promised) + 4}" y="${H - 2}" class="gtp">Promised start, day ${p.sched.promised}</text>`;
+    g += `<line x1="${sx(jd)}" y1="${top - 6}" x2="${sx(jd)}" y2="${H - 8}" class="gn"/><text x="${sx(jd) - 4}" y="${H - 2}" class="gtn" text-anchor="end">Today, day ${jd}</text></svg>`;
+    return g;
+  }
+  function scheduleCard(p) {
+    const r = zen(p), jd = jobDay(p), edit = ['staff', 'engineer', 'manager'].includes(S.role);
+    const head = `<div class="card"><h3>Schedule (Zenith CPM) <span class="sim">durations are assumptions</span></h3><div class="grid g4"><div><span class="muted small">Promised install start</span><div><b>${promDate(p)}</b></div></div><div><span class="muted small">Projected install start</span><div><b>${startDate(p, r)}</b> ${riskChip(p)}</div></div><div><span class="muted small">Holding it up</span><div><b>${esc(r.binding.name)}</b><small class="sm">${esc(r.binding.owner)}</small></div></div><div><span class="muted small">Today</span><div><b>Day ${jd}</b> <small class="sm">${D.dayDate(S.demoDay)}</small></div></div></div>
+      <div class="flag ${r.slip > 0 ? 'bad' : 'info'}" style="margin-top:10px"><b class="who">${r.action.agent ? 'Agent action · needs approval' : 'Recommended action'}</b>${esc(r.action.text)}</div></div>`;
+    const key = x => `<span class="lg crit"></span>Critical (zero slack) <span class="lg norm"></span>Has slack <span class="lg gs"></span>Slack (dashed) <span class="lg done"></span>Done`;
+    const rows = CP.IDS.map(id => { const t = r.tasks[id], ok = !t.done && edit;
+      return `<tr><td><b>${esc(t.name)}</b>${t.external ? '<small class="sm">outside our control</small>' : ''}</td><td>${esc(t.owner)}</td><td>Day ${t.es} to ${t.ef}</td><td>${t.done ? '<span class="chip ok">Done day ' + t.ef + '</span>' : t.late ? '<span class="chip bad">Late</span>' : '<span class="chip">Planned</span>'}</td><td>${t.slack} d</td><td class="right">${ok ? `${['T2', 'T3', 'T4', 'T5'].includes(id) ? `<button class="line" data-act="tdone" data-id="${p.id}" data-t="${id}">Mark done</button> ` : ''}<button class="line" data-act="tdelay" data-id="${p.id}" data-t="${id}">Delay 3 d</button>` : ''}</td></tr>`; }).join('');
+    return head + `<div class="card"><div class="legend">${key()}</div><div class="tscroll">${ganttSVG(p, r)}</div></div><div class="card"><h3>Tasks <span class="sim">buttons simulate progress</span></h3><div class="tscroll"><table><tr><th>Task</th><th>Owner</th><th>Plan</th><th>Status</th><th>Slack</th><th></th></tr>${rows}</table></div></div>`;
+  }
+  function costGap(p, cap, v1) {
+    if (!p.goal || p.goal.type === 'usual') return '';
+    const r = M.solveGoal(p.goal, 'value', p.kwh, p.dayShare, p.rate, cap, p.cfg.yf);
+    if (r.unmet || !r.designs.length) return '<div class="flag info" style="margin-top:8px"><b class="who">Cost check</b>No design on this roof meets the goal, so there is no cost-optimal design to compare with.</div>';
+    const low = r.designs.find(d => d.label === 'low') || r.designs[0], gap = v1.cost - low.res.cost;
+    return `<div class="flag ${gap > 0.02 * low.res.cost ? 'warn' : 'ok'}" style="margin-top:8px"><b class="who">Cost check · design-based cost optimization</b>The lowest-cost design that meets the same goal is ${low.cfg.panels} panels${low.cfg.batt ? ' + ' + low.cfg.batt + ' kWh battery' : ''} at ${peso(low.res.cost)}. The customer's design costs ${peso(v1.cost)}, a cost-optimality gap of ${gap > 0 ? peso(gap) + ' (' + pct(gap / low.res.cost) + ')' : 'none'}.</div>`;
   }
 
   // ---------- views ----------
@@ -529,7 +610,7 @@
   function engineerReview(p) {
     const s = siteOf(p), r = p.rev, staff = S.role === 'engineer', st = r && r.status, contact = p.contact && p.contact.done, locked = !staff || p.stage !== 1 || st === 'awaiting' || st === 'accepted' || !contact;
     const cap = Math.max(1, Math.min(M.ROOF_MAX, Math.floor(s.usable / M.PANEL_AREA))), d = s.draft, v1 = RZ(p, p.cfg), v2 = RZ(p, d), same = d.panels === p.cfg.panels && d.batt === p.cfg.batt && d.mon === p.cfg.mon;
-    const gl = goalCheck(p.goal, v2, v1.paybackNM);
+    const gl = goalCheck(p.goal, v2, v1.paybackNM), cg = costGap(p, cap, v1);
     const ck = CHECKS.map(c => { const x = s.checks[c[0]], sg = ['pass', 'adjust', 'fail'].map(k => `<button class="${x.r === k ? k : ''}" data-act="sck" data-id="${p.id}" data-k="${c[0]}" data-v="${k}" aria-pressed="${x.r === k}" ${locked ? 'disabled' : ''}>${k[0].toUpperCase() + k.slice(1)}</button>`).join('');
       return `<div class="ck"><div><b>${c[1]}</b><small>${c[0] === 'area' ? `Customer said ${custUsable(p)} m² usable. You measured ${s.usable} m².` : c[2]}</small></div><div class="sg" role="group" aria-label="${c[1]}">${sg}</div>${x.r !== 'pass' ? `<input class="why" data-site="why.${c[0]}" value="${esc(x.why)}" placeholder="Reason the customer will read (required)" aria-label="Reason for ${c[1]}" ${locked ? 'disabled' : ''}>` : ''}</div>`; }).join('');
     const rows = [['panels', 'Panels', p.cfg.panels, d.panels], ['batt', 'Battery', p.cfg.batt + ' kWh', d.batt + ' kWh'], ['area', 'Usable roof', custUsable(p) + ' m²', s.usable + ' m²']].map(x => { const ch = x[0] === 'panels' ? p.cfg.panels !== d.panels : x[0] === 'batt' ? p.cfg.batt !== d.batt : custUsable(p) !== s.usable;
@@ -545,7 +626,7 @@
       <section style="display:flex;flex-direction:column;gap:14px"><div class="card"><h3>2. Change the design <span class="chip">Customer's version stays on record</span></h3>
         <div class="dr h"><span>Item</span><span>Customer</span><span></span><span>Yours</span><span>Reason</span></div>${rows}
         ${locked ? '' : `<div class="engctl"><span>Panels</span><div class="stepper"><button class="line" data-act="sPan" data-id="${p.id}" data-d="-1" aria-label="Remove a panel" ${d.panels <= 1 ? 'disabled' : ''}>−</button><b>${d.panels}</b><button class="line" data-act="sPan" data-id="${p.id}" data-d="1" aria-label="Add a panel" ${d.panels >= cap ? 'disabled' : ''}>+</button></div><span>Battery</span><div class="seg5">${[0, 5, 10, 15, 20].map(n => `<button class="${d.batt === n ? 'on' : ''}" data-act="sBat" data-id="${p.id}" data-n="${n}">${n ? n : 'None'}</button>`).join('')}</div><label>Usable roof (m²)<input type="number" min="5" max="120" step="1" data-site="usable" value="${s.usable}"></label></div>`}
-        ${imp}${gl.text && !gl.met ? `<div class="flag warn" style="margin-top:8px">${gl.text} The customer will be told.</div>` : gl.text ? `<div class="flag ok" style="margin-top:8px">${gl.text}</div>` : ''}</div>
+        ${imp}${cg}${gl.text && !gl.met ? `<div class="flag warn" style="margin-top:8px">${gl.text} The customer will be told.</div>` : gl.text ? `<div class="flag ok" style="margin-top:8px">${gl.text}</div>` : ''}</div>
       <div class="card"><h3>3. Proposal to the customer</h3>${err}${locked ? `<p class="muted small">${contact ? 'The proposal is sent. Waiting for the customer.' : 'Record your contact with the customer first.'}</p>` : `<div class="decide"><button class="alt" data-act="eng" data-k="propose" data-id="${p.id}">${same && custUsable(p) === s.usable ? 'Send proposal: no changes' : 'Send proposal with changes'}</button></div>
         <p class="small muted" style="margin:8px 0 0">The customer is never asked to fix or redraw anything. You send the design you recommend, with reasons. The final quotation is made only after the customer agrees.</p>`}</div></div></section></div>`;
   }
@@ -600,11 +681,12 @@
     let h = `<div class="ph"><div><h1>Hello, ${esc(p.name.split(' ')[0])}</h1><p class="sub">${p.id} · ${esc(p.city)} · ${p.utility} · ${M.TIERS[p.tier].label} design</p></div></div>
       <div class="card dh">${tracker(p)}<p class="nextup"><b>What happens next</b>${esc(nxt)}</p></div>`;
     h += revisionCard(p);
+    if (p.sched) { const r = zen(p); h += `<div class="card promise"><div><span class="muted small">Promised install start</span><div class="big">${promDate(p)}</div><span class="muted small">Set when you accepted the quotation and kept on record.</span></div>${r.slip > 0 && zActive(p) ? `<div class="flag warn"><b class="who">Update</b>Right now we expect to start on ${startDate(p, r)}, ${r.slip} day${r.slip > 1 ? 's' : ''} later, because of: ${esc(r.binding.name.toLowerCase())}. We will tell you if this changes.</div>` : ''}</div>`; }
     if (p.stage === 3 && p.released) {
       const d = p.quoteDelta;
       h += `<div class="card quote"><div class="q-h"><span class="chip ok">Proposal ready</span><h2>Your final quotation</h2></div>
         <div class="q-grid"><div class="q-price"><span>Final price</span><b>${peso(p.final.total)}</b><small>${d >= 0 ? '+' : ''}${(d * 100).toFixed(1)}% vs your estimate of ${peso(p.indicative.cost)}</small></div>
-        <div class="q-list"><div><span>System</span><b>${kw1(p.size.kw)} kW${p.size.batt ? ' + ' + p.size.batt + ' kWh battery' : ''}</b></div><div><span>Bill until net metering</span><b>${peso(p.size.billNoNM)}</b></div><div><span>Bill after net metering</span><b>${peso(p.size.billNM)}</b></div></div></div>
+        <div class="q-list"><div><span>Promised install start</span><b>${D.PROMISE_DAYS} days after you accept</b></div><div><span>System</span><b>${kw1(p.size.kw)} kW${p.size.batt ? ' + ' + p.size.batt + ' kWh battery' : ''}</b></div><div><span>Bill until net metering</span><b>${peso(p.size.billNoNM)}</b></div><div><span>Bill after net metering</span><b>${peso(p.size.billNM)}</b></div></div></div>
         <p class="muted small">Net metering is approved by the utility, not by us. We prepare and track the papers.</p><button class="alt" data-act="accept" data-id="${p.id}">Accept quotation</button></div>`;
     } else if (p.stage === 3) h += `<div class="card">${empty('Quotation awaiting release', 'It is approved internally. Our staff will release it to you shortly.')}</div>`;
     if (p.permit) {
@@ -615,7 +697,7 @@
       ${p.permit.submitted ? '<p class="small muted">Submitted to the utility or LGU. Their approval time is outside our control; we will keep you updated.</p>' : ''}</div>`;
     }
     h += changeLogCard(p);
-    if (p.stage === 6) h += '<div class="card"><h2>Your system is running</h2><p>See how it is performing, and why your bill is what it is, under <a href="#/insights">My bill insights</a>.</p></div>';
+    if (p.stage === 6) h += '<div class="card"><h2>Your system is running</h2><p>See how it is performing, and why your bill is what it is, under <a href="#/insights">Bill insights</a>, a supporting view.</p></div>';
     return h;
   }
   function statusChip(i) { return i.status === 'ok' ? `<span class="chip ok">Received${i.source ? ' · ' + (i.source === 'uploaded' ? 'uploaded' : i.source === 'physical' ? 'physical copy' : i.source) : ''}</span>` : i.status === 'pending' ? `<span class="chip warn">${i.days ? 'Pending ' + i.days + ' d' : 'Needs review'}</span>` : '<span class="chip bad">Missing</span>'; }
@@ -624,11 +706,11 @@
     const done = S.projects.filter(p => p.stage === 6);
     if (!UI.insProject || !P(UI.insProject) || P(UI.insProject).stage !== 6) UI.insProject = (P(S.myProject) && P(S.myProject).stage === 6) ? S.myProject : (done[0] || {}).id;
     const p = P(UI.insProject);
-    if (!p) return '<h1>My bill insights</h1><div class="card">Insights appear once your system is installed and sending data.</div>';
+    if (!p) return '<h1>Bill insights <span class="sim">supporting view</span></h1><div class="card">Insights appear once your system is installed and sending data.</div>';
     const s = D.series(p), last = s[s.length - 1], gap = last.actual - last.promised;
     const h = M.hourly({ kwh: p.kwh * last.loadF, dayShare: p.dayShare, kw: p.size.kw, batt: p.size.batt }, UI.rainy ? 0.3 : 1);
     const nmOk = p.nmFrom != null;
-    let o = `<h1>Why is my bill what it is?</h1><p class="sub">${sim} Demo accounts: <select data-b="insp">${done.map(x => `<option value="${x.id}" ${x.id === p.id ? 'selected' : ''}>${esc(x.name)} (${x.id})</option>`).join('')}</select></p>
+    let o = `<h1>Why is my bill what it is? <span class="sim">supporting view</span></h1><p class="sub">${sim} Demo accounts: <select data-b="insp">${done.map(x => `<option value="${x.id}" ${x.id === p.id ? 'selected' : ''}>${esc(x.name)} (${x.id})</option>`).join('')}</select></p>
     <div class="grid g4"><div class="card kpi"><span class="muted small">Promised bill</span><div class="big">${peso(last.promised)}</div></div><div class="card kpi"><span class="muted small">Actual bill (${last.m})</span><div class="big">${peso(last.actual)}</div></div>
       <div class="card kpi"><span class="muted small">Difference</span><div class="big" style="color:${gap > 0 ? 'var(--red)' : 'var(--green)'}">${signed(gap)}</div></div><div class="card kpi"><span class="muted small">Net metering</span><div class="big" style="font-size:1.2rem">${nmOk ? '<span class="chip ok">Approved</span>' : '<span class="chip warn">Pending utility approval</span>'}</div></div></div>
     <div class="grid g2"><div class="card"><h2>What explains the difference (${last.m})</h2><p class="muted small">Each step changes one thing at a time, so the amounts add up to the total difference.</p>
@@ -643,8 +725,8 @@
   }
 
 
-  const STAGES = ['Site assessment', 'Quotation', 'Release and accept', 'Permits', 'Installation', 'After-sales'];
-  function stageLabel(p) { if (p.stage <= 3) return STAGES[p.stage - 1]; if (p.stage === 6) return 'After-sales'; return p.permit && p.permit.submitted && !p.permit.approved && p.install && !p.install.qa ? 'Installation, permit with utility' : 'Permits and installation'; }
+  const STAGES = ['Site assessment', 'Quotation', 'Release and accept', 'Permits', 'Installation', 'Closure'];
+  function stageLabel(p) { if (p.stage <= 3) return STAGES[p.stage - 1]; if (p.stage === 6) return 'Closure'; return p.permit && p.permit.submitted && !p.permit.approved && p.install && !p.install.qa ? 'Installation, permit with utility' : 'Permits and installation'; }
   function stageStates(p) {
     return STAGES.map((l, i) => { const n = i + 1; let c = '', x = '';
       if (n <= 3) c = p.stage > n ? 'done' : p.stage === n ? 'now' : '';
@@ -673,21 +755,21 @@
   }
   function pipelineView() {
     const nW = S.projects.filter(isWait).length, nFlow = S.projects.filter(p => p.stage >= 4 && p.stage < 6).length, nFlag = S.projects.filter(p => flags(p).length).length;
-    const q = (UI.q || '').trim().toLowerCase(), F = { all: () => true, wait: isWait, flag: p => flags(p).length > 0, flow: p => p.stage >= 4 && p.stage < 6, cust: p => p.stage === 1 && p.rev && p.rev.status === 'awaiting' };
-    const rows = S.projects.slice().sort((x, y) => (isWait(y) - isWait(x)) || x.stage - y.stage).filter(p => (F[UI.pf] || F.all)(p) && (!q || [p.name, p.id, p.city, p.utility].join(' ').toLowerCase().includes(q)));
+    const q = (UI.q || '').trim().toLowerCase(), F = { all: () => true, wait: isWait, flag: p => flags(p).length > 0, flow: p => p.stage >= 4 && p.stage < 6, risk: zActive, cust: p => p.stage === 1 && p.rev && p.rev.status === 'awaiting' };
+    const rows = S.projects.slice().sort((x, y) => UI.pf === 'risk' ? (zSlip(y) - zSlip(x)) || (zMs(x) - zMs(y)) : (isWait(y) - isWait(x)) || x.stage - y.stage).filter(p => (F[UI.pf] || F.all)(p) && (!q || [p.name, p.id, p.city, p.utility].join(' ').toLowerCase().includes(q)));
     const chip = (k, l, n) => `<button class="fchip ${UI.pf === k ? 'on' : ''}" data-act="pf" data-f="${k}" aria-pressed="${UI.pf === k}">${l}<i>${n}</i></button>`;
     let h = `<div class="ph" style="margin-bottom:8px"><h1>Project pipeline</h1></div><div class="kstrip" role="list"><div role="listitem"><b>${nW}</b><span>waiting on you</span></div><div role="listitem"><b>${nFlow}</b><span>in permits or installation</span></div><div role="listitem"><b>${nFlag}</b><span>with open flags</span></div><div role="listitem"><b>${S.projects.length}</b><span>projects in total</span></div></div>
-      <div class="fbar" role="group" aria-label="Filter projects">${chip('all', 'All', S.projects.length)}${chip('wait', 'Waiting on me', nW)}${chip('flag', 'Flagged', nFlag)}${chip('cust', 'With customer', S.projects.filter(p => p.stage === 1 && p.rev && p.rev.status === 'awaiting').length)}${chip('flow', 'In progress', nFlow)}${q ? `<span class="muted small" style="margin-left:auto">Results for “${esc(UI.q)}” <button class="ghost" data-act="clearq">Clear</button></span>` : '<span class="muted small" style="margin-left:auto">Waiting-on-you first</span>'}</div>`;
+      <div class="fbar" role="group" aria-label="Filter projects">${chip('all', 'All', S.projects.length)}${chip('wait', 'Waiting on me', nW)}${chip('flag', 'Flagged', nFlag)}${chip('cust', 'With customer', S.projects.filter(p => p.stage === 1 && p.rev && p.rev.status === 'awaiting').length)}${chip('flow', 'In progress', nFlow)}${chip('risk', 'Schedule risk', S.projects.filter(zActive).length)}${q ? `<span class="muted small" style="margin-left:auto">Results for “${esc(UI.q)}” <button class="ghost" data-act="clearq">Clear</button></span>` : (UI.pf === 'risk' ? '<span class="muted small" style="margin-left:auto">Most delayed first</span>' : '<span class="muted small" style="margin-left:auto">Waiting-on-you first</span>')}</div>`;
     if (!rows.length) return h + `<div class="card">${empty('No projects match', q ? 'Try a different name, city or project number.' : 'Nothing in this view right now.', '<button class="line" data-act="pf" data-f="all">Show all projects</button>')}</div>`;
     const sel = rows.find(p => p.id === UI.sel) || rows[0];
     h += `<div class="msplit"><div class="card tablecard"><table class="ptable dense"><thead><tr><th>Project</th><th>City</th><th>Design</th><th>Progress</th><th>Attention</th></tr></thead><tbody>`;
     rows.forEach(p => { const w = isWait(p), fl = flags(p).length;
-      h += `<tr class="click ${w ? 'mine' : ''} ${p.id === sel.id ? 'sel' : ''}" tabindex="0" data-act="psel" data-id="${p.id}" aria-selected="${p.id === sel.id}"><td><div class="who2">${avatar(p.name, 28)}<span><b>${esc(p.name)}</b><small>${p.id}</small></span></div></td><td>${esc(p.city)}</td><td>${M.TIERS[p.tier].label}<small class="sm">${kw1(p.size.kw)} kW</small></td><td>${dots(p)}<small class="sm">${esc(stageLabel(p))}</small></td><td>${stateTag(p) ? tagChip(p) : w ? '<span class="chip warn">Your approval</span>' : fl ? `<span class="chip bad">${fl} flag${fl > 1 ? 's' : ''}</span>` : '<span class="chip ok">Clear</span>'}</td></tr>`; });
+      h += `<tr class="click ${w ? 'mine' : ''} ${p.id === sel.id ? 'sel' : ''}" tabindex="0" data-act="psel" data-id="${p.id}" aria-selected="${p.id === sel.id}"><td><div class="who2">${avatar(p.name, 28)}<span><b>${esc(p.name)}</b><small>${p.id}</small></span></div></td><td>${esc(p.city)}</td><td>${M.TIERS[p.tier].label}<small class="sm">${kw1(p.size.kw)} kW</small></td><td>${dots(p)}<small class="sm">${esc(stageLabel(p))}</small></td><td>${stateTag(p) ? tagChip(p) : w ? '<span class="chip warn">Your approval</span>' : fl ? `<span class="chip bad">${fl} flag${fl > 1 ? 's' : ''}</span>` : '<span class="chip ok">Clear</span>'}${zActive(p) ? ' ' + riskChip(p) : ''}</td></tr>`; });
     return h + `</tbody></table></div><aside class="card side" aria-label="Selected project">${panelHTML(sel)}</aside></div>`;
   }
   function detailView(id) {
     const p = P(id); if (!p) return '<p>Not found.</p>';
-    const H = { ov: '', sr: '', q: '', pm: '', in: '', ac: '' }, nm = esc(p.name), hdr = `<p class="crumb"><a href="#/pipeline">Project pipeline</a> / ${nm}</p><div class="dh card"><div class="dh-t">${avatar(p.name, 56)}<div><h1>${nm}</h1><p class="sub" style="margin:0">${p.id} · ${esc(p.city)} · ${p.utility} · ${M.TIERS[p.tier].label} design, ${kw1(p.size.kw)} kW${p.size.batt ? ' + ' + p.size.batt + ' kWh battery' : ''}</p></div></div>${tracker(p)}</div>`;
+    const H = { ov: '', sr: '', q: '', pm: '', in: '', sc: '', ac: '' }, nm = esc(p.name), hdr = `<p class="crumb"><a href="#/pipeline">Project pipeline</a> / ${nm}</p><div class="dh card"><div class="dh-t">${avatar(p.name, 56)}<div><h1>${nm}</h1><p class="sub" style="margin:0">${p.id} · ${esc(p.city)} · ${p.utility} · ${M.TIERS[p.tier].label} design, ${kw1(p.size.kw)} kW${p.size.batt ? ' + ' + p.size.batt + ' kWh battery' : ''}</p></div></div>${tracker(p)}</div>`;
     const g = GATES[p.stage];
     if (g) { const done = p.approvals[p.stage], can = g.need.includes(S.role) && !done.includes(S.role) && !(p.stage === 3 && p.released);
       H.ov += `<div class="card"><h3>Approvals needed — stage ${p.stage}</h3><p>${g.label}.</p><p>${g.need.map(r => `<span class="chip ${done.includes(r) ? 'ok' : 'warn'}">${done.includes(r) ? '✓ ' : ''}${ROLES[r].split(' (')[0]}</span>`).join(' ')}</p>
@@ -700,10 +782,11 @@
       H.q += `<div class="card"><h3>Quote &amp; bill of materials</h3><div class="metric"><span>Indicative estimate (customer saw)</span><b>${peso(p.indicative.cost)}</b></div><div class="metric"><span>Final quotation</span><b>${peso(t)} (${p.quoteDelta >= 0 ? '+' : ''}${(p.quoteDelta * 100).toFixed(1)}%)</b></div><table style="margin-top:8px">${bom.map(b => `<tr><td>${b[0]}</td><td class="right">${peso(b[1])}</td></tr>`).join('')}</table></div>`; }
     if (p.permit) H.pm += permitCard(p);
     if (p.install) H.in += installCard(p);
-    if (p.stage === 6) { const s = D.series(p), l = s[s.length - 1];
-      H.ov += `<div class="card"><h3>After-sales &amp; KPIs</h3><div class="grid g4"><div><span class="muted small">Latest promised</span><div><b>${peso(l.promised)}</b></div></div><div><span class="muted small">Latest actual</span><div><b>${peso(l.actual)}</b></div></div><div><span class="muted small">Net metering</span><div><b>${p.nmFrom != null ? 'Approved' : 'Pending'}</b></div></div><div><span class="muted small">Ticket</span><div><b>${p.ticket ? 'Open' : 'None'}</b></div></div></div>${monthChart(s)}<button class="alt" data-act="action" data-id="${p.id}" ${S.role === 'management' && !p.actionApproved ? '' : 'disabled'}>${p.actionApproved ? 'Action plan approved' : 'Management: approve action plan'}</button></div>`; }
+    if (p.stage === 6) { const r = p.sched ? zen(p) : null;
+      H.ov += `<div class="card"><h3>Closure summary</h3>${r ? `<div class="grid g4"><div><span class="muted small">Promised install start</span><div><b>${promDate(p)}</b></div></div><div><span class="muted small">Actual install start</span><div><b>${startDate(p, r)}</b></div></div><div><span class="muted small">Delay vs promise</span><div><b>${r.slip > 0 ? r.slip + ' days late' : r.slip < 0 ? -r.slip + ' days early' : 'On time'}</b></div></div><div><span class="muted small">Turned over</span><div><b>${D.dayDate(p.sched.acceptedDay + r.finish)}</b></div></div></div>` : ''}<h4>Tickets</h4>${p.ticket ? '<p><span class="chip warn">Open</span> A service ticket was logged after turnover. Review it in Activity.</p>' : '<p class="muted">No tickets logged.</p>'}<p class="muted small">Planned versus actual delay feeds the next quotation&rsquo;s promised date. Post-installation service prediction is out of scope.</p></div>`; }
+    if (p.sched) H.sc += scheduleCard(p);
     H.ac += `<div class="card"><h3>Activity</h3><ol class="tl">${p.log.slice().reverse().map(x => `<li><i></i><div><b>${esc(x.who)}</b> ${esc(x.t)}${x.at ? `<small>${ago(x.at)}</small>` : ''}</div></li>`).join('') || '<li><div class="muted">No activity yet.</div></li>'}</ol></div>`;
-    const tabs = [['ov', 'Overview', 1], ['sr', 'Site review', !!H.sr], ['q', 'Design and quote', !!H.q], ['pm', 'Permits', !!H.pm], ['in', 'Installation', !!H.in], ['ac', 'Activity', 1]].filter(x => x[2]);
+    const tabs = [['ov', 'Overview', 1], ['sr', 'Site review', !!H.sr], ['q', 'Design and quote', !!H.q], ['pm', 'Permits', !!H.pm], ['in', 'Installation', !!H.in], ['sc', 'Schedule', !!H.sc], ['ac', 'Activity', 1]].filter(x => x[2]);
     const cur = tabs.find(x => x[0] === UI.tab['d' + id]) ? UI.tab['d' + id] : (S.role === 'engineer' && p.stage === 1 ? 'sr' : 'ov');
     return hdr + `<div class="tabs" role="tablist">${tabs.map(x => `<button role="tab" aria-selected="${x[0] === cur}" class="${x[0] === cur ? 'on' : ''}" data-act="dtab" data-id="${id}" data-t="${x[0]}">${x[1]}</button>`).join('')}</div><div role="tabpanel">${H[cur]}</div>`;
   }
@@ -757,20 +840,13 @@
   // ---------- analytics ----------
   const sim_ = () => sim;
   function analyticsView() {
-    const A = D.analytics(), tabs = [['variance', 'Expectation gap', ['engineer', 'manager', 'management']], ['permits', 'Permit cycle time', ['manager', 'management']], ['funnel', 'Tier conversion', ['manager', 'management']], ['techs', 'Technician utilization', ['manager', 'management']], ['changes', 'Design changes', ['engineer', 'manager', 'management']]].filter(t => t[2].includes(S.role));
+    const A = D.analytics(), tabs = [['zenith', 'Zenith: delay priorities', ['engineer', 'manager', 'management']], ['permits', 'Permit durations', ['manager', 'management']], ['funnel', 'Tier conversion', ['manager', 'management']], ['techs', 'Technician utilization', ['manager', 'management']], ['changes', 'Design changes', ['engineer', 'manager', 'management']]].filter(t => t[2].includes(S.role));
     const cur = tabs.find(t => t[0] === UI.tab.an) ? UI.tab.an : tabs[0][0];
     let h = `<div class="ph"><div><h1>Analytics ${sim}</h1><p class="sub">Each view answers one installer question and points to one action.</p></div></div>`;
-    if (S.role === 'management') { const r = A.rows; h += `<div class="grid g4"><div class="card kpi"><span class="muted small">Avg. bill gap vs promise</span><div class="big">${pct(mean(r.map(x => x.gap / x.promised)))}</div></div><div class="card kpi"><span class="muted small">Median permit prep</span><div class="big">${med(r.map(x => x.prep))} days</div></div><div class="card kpi"><span class="muted small">Quote acceptance</span><div class="big">${pct(['low', 'value', 'high'].reduce((a, t) => a + A.funnel[t].accept, 0) / ['low', 'value', 'high'].reduce((a, t) => a + A.funnel[t].quote, 0))}</div></div><div class="card kpi"><span class="muted small">Avg. technician utilization</span><div class="big">${pct(mean(A.techs.map(t => t.util)))}</div></div></div>`; }
-    if (['manager', 'management'].includes(S.role)) { const r = A.rows, nmw = r.filter(x => !x.nm).length, slow = A.utilities.map(u => [u, med(r.filter(x => x.utility === u).map(x => x.prep))]).sort((a, b) => b[1] - a[1])[0], busy = A.techs.slice().sort((a, b) => b.util - a.util)[0], idle = A.techs.slice().sort((a, b) => a.util - b.util)[0];
-      h += `<div class="card nextcard"><h3>What to do next</h3><ol><li><b>Explain the net metering wait before customers accept.</b> ${nmw} of ${r.length} installed projects are still waiting, and it drives most bill gaps.</li><li><b>Start ${esc(slow[0])} permits earlier.</b> Their median preparation is ${slow[1]} days, the longest of any utility.</li><li><b>Rebalance technicians.</b> ${esc(busy.name)} is at ${pct(busy.util)} while ${esc(idle.name)} is at ${pct(idle.util)}.</li></ol></div>`; }
+    if (['manager', 'management'].includes(S.role)) { const rk = zRank().filter(x => x.res.slip > 0 || (x.res.minSlack != null && x.res.minSlack <= 2)).slice(0, 3);
+      h += `<div class="card nextcard"><h3>What to do next <span class="sim">from the CPM result</span></h3>${rk.length ? '<ol>' + rk.map(x => `<li><b>${esc(x.p.name)}: ${esc(x.res.binding.name)}.</b> ${x.res.slip > 0 ? x.res.slip + ' days past the promise. ' : 'On time but slack is ' + x.res.minSlack + ' days. '}${esc(x.res.action.text)}</li>`).join('') + '</ol>' : '<p class="muted">Every active job is on or ahead of its promised start.</p>'}</div>`; }
     h += `<div class="tabs">${tabs.map(t => `<button class="${t[0] === cur ? 'on' : ''}" data-act="antab" data-t="${t[0]}">${t[1]}</button>`).join('')}</div>`;
-    if (cur === 'variance') {
-      const r = A.rows, hit = r.filter(x => Math.abs(x.gap) / x.promised <= 0.1).length / r.length, tot = mean(r.map(x => x.gap)), warn = r.slice().sort((a, b) => b.gap / b.promised - a.gap / a.promised).slice(0, 8);
-      h += `<div class="grid g2"><div class="card"><h2>Why actual bills differ from the promise</h2><p class="muted small">Average gap ${signed(tot)}/month across ${r.length} installed projects. Only ${pct(hit)} land within ±10% of the promised bill.</p>${hbars(Object.keys(DRV).map(k => ({ l: DRV[k].l, v: mean(r.map(x => x.parts[k])), c: DRV[k].c, t: signed(mean(r.map(x => x.parts[k]))) })))}
-        <div class="flag info"><b class="who">Insight</b>Projects still waiting on net metering: ${r.filter(x => !x.nm).length} of ${r.length}. If the inquiry estimate shows the bill both before and after approval, this driver stops being a surprise. That is a policy the data can support.</div></div>
-        <div class="card"><h2>By design tier</h2><table><tr><th>Tier</th><th>Projects</th><th>Avg gap</th><th>Within ±10%</th></tr>${['low', 'value', 'high'].map(t => { const x = r.filter(y => y.tier === t); return `<tr><td>${M.TIERS[t].label}</td><td>${x.length}</td><td>${signed(mean(x.map(y => y.gap)))}</td><td>${pct(x.filter(y => Math.abs(y.gap) / y.promised <= 0.1).length / x.length)}</td></tr>`; }).join('')}</table></div></div>
-        <div class="card"><h2>Variance warnings (largest gaps)</h2><table><tr><th>Project</th><th>Utility</th><th>Promised</th><th>Actual</th><th>Main driver</th></tr>${warn.map(x => { const k = Object.keys(x.parts).sort((a, b) => Math.abs(x.parts[b]) - Math.abs(x.parts[a]))[0]; return `<tr><td>${x.id}</td><td>${x.utility}</td><td>${peso(x.promised)}</td><td>${peso(x.actual)} <span class="chip bad">${pct(x.gap / x.promised)}</span></td><td><span class="chip" style="background:${DRV[k].c}22">${DRV[k].l}</span></td></tr>`; }).join('')}</table></div>`;
-    }
+    if (cur === 'zenith') h += zenithView();
     if (cur === 'permits') {
       h += `<div class="grid g2"><div class="card"><h2>Preparation time to complete requirements</h2><p class="muted small">Median days from acceptance to a complete package — the part we can influence.</p>${hbars(A.utilities.map(u => ({ l: u, v: med(A.rows.filter(x => x.utility === u).map(x => x.prep)), c: 'var(--deep)', t: med(A.rows.filter(x => x.utility === u).map(x => x.prep)) + ' days' })), { max: 40 })}
         <h3 style="margin-top:14px">Returned for revision</h3>${hbars(A.utilities.map(u => { const x = A.rows.filter(y => y.utility === u); return { l: u, v: x.filter(y => y.returned).length / x.length, c: 'var(--red)', t: pct(x.filter(y => y.returned).length / x.length) }; }), { max: 1 })}</div>
@@ -799,20 +875,24 @@
 
   function specView() {
     const A = [
-      ['A1', 'Expectation gap: estimate vs actual bill, decomposed by cause', '1, 2, 6', 'Customer, engineer, manager', 'Bill, appliances, location, monthly seasonal irradiance (public: PVGIS / NASA POWER), net-metering approval date, monthly bill and inverter kWh export', 'Model real; actuals simulated', 'Scenario-based energy balance, then one-factor-at-a-time attribution (weather → load → net metering)'],
-      ['A2', 'Customer load, battery and grid-draw profile', '1, 6', 'Customer', 'Appliance schedule (or smart-meter export), system size, battery size', 'Model real; profile assumed', 'Hourly energy balance simulation with battery state of charge'],
-      ['A3', 'Variance warning', '6', 'Engineer, management', 'A1 output, threshold set with client', 'Prototype rule', 'Threshold on gap %, labelled with dominant driver; later a control chart'],
-      ['A4', 'Permit preparation cycle time and return rate by utility/location', '4', 'Staff, manager', 'Timestamps for each requirement received/returned, utility, city, document source', 'Simulated; needs event logging from day one', 'Median / IQR cycle time, return rate; planned logistic regression for returned-submission risk'],
-      ['A5', 'Tier conversion and quote-change effect', '1–3', 'Manager, management', 'Inquiries, tier picked, indicative vs final quote, accepted or not', 'Simulated', 'Funnel; logistic regression of acceptance on tier and quote change'],
-      ['A6', 'Technician assignment and utilization', '5', 'Manager', 'Skills, base, availability calendar, job durations, address history', 'Simulated', 'Weighted scoring now; min-cost assignment (OR) as a later step'],
-      ['A7', 'Complaint classification (deferred)', '6', 'Management', 'Tickets with cause labels', 'Needs client history', 'A1 drivers give a rule-based root-cause label; ML only after enough labelled tickets']
+      ['A1', '<b>Core.</b> Zenith: CPM delay prioritization. Which accepted jobs will miss the promised install start, by how much, what is holding each one up, and which to chase first', '4, 5', 'Staff, engineer, manager, management', 'Quote acceptance date, task start and finish dates (permit package, permit processing, materials, work order, install, QA), technician next free day', 'Durations are assumptions; schedules in this prototype are simulated', 'Critical Path Method: forward and backward pass per job, slack, projected install start minus the promised date. Ranked by slip, then smallest slack, then days to the promise. Ignores crew capacity'],
+      ['A2', 'Design-based cost optimization: how much more the customer\'s design costs than the cheapest design that meets the same goal', '1, 2', 'Customer, engineer', 'Bill, roof, goal, price assumptions', 'Model real; prices assumed', 'Search of every panel and battery combination against the goal; cost-optimality gap shown in the engineer review'],
+      ['A3', 'Permit durations by utility: the task durations that feed A1', '4', 'Staff, manager', 'Timestamps for each requirement received and returned, utility, city', 'Assumed defaults, simulated history; needs event logging from day one', 'Median and spread per utility; replace the assumed durations once real data exists'],
+      ['A4', 'Tier conversion and quote-change effect', '1–3', 'Manager, management', 'Inquiries, tier picked, indicative vs final quote, accepted or not', 'Simulated', 'Funnel; logistic regression of acceptance on tier and quote change'],
+      ['A5', 'Technician utilization', '5', 'Manager', 'Skills, base, availability calendar, job durations', 'Simulated', 'Weighted score now (fit 0.35, availability 0.35, proximity 0.3); min-cost assignment later'],
+      ['A6', 'Complaint classification (deferred)', '6', 'Management', 'Tickets with cause labels', 'Needs client history', 'Not built. Post-installation service prediction is out of scope']
     ];
-    const R = [['R1', 'Bill insights (monthly)', 'Customer', 'A1, A2'], ['R2', 'Quotation expectation sheet (before and after net metering)', 'Customer', 'A1'], ['R3', 'Permit readiness checklist per project', 'Staff', 'A4'], ['R4', 'Weekly permit bottleneck report', 'Manager', 'A4'], ['R5', 'Variance warning digest', 'Engineer, manager', 'A3'], ['R6', 'Tier conversion report', 'Management', 'A5'], ['R7', 'Technician utilization', 'Manager', 'A6'], ['R8', 'Executive KPI summary', 'Management', 'A1–A6']];
-    return `<h1>Analytics specification</h1><p class="sub">Problem → data → method → report, tied to a stage. Draft for the proposal; validate with the client.</p><div class="card"><table><tr><th></th><th>Problem solved</th><th>Stage</th><th>Audience</th><th>Data needed</th><th>Data status</th><th>Method</th></tr>${A.map(a => `<tr><td><b>${a[0]}</b></td>${a.slice(1).map(c => `<td class="small">${c}</td>`).join('')}</tr>`).join('')}</table></div>
+    const R = [['R1', 'Delay priorities: ranked list of jobs with the action for each', 'Staff, engineer, manager', 'A1'], ['R2', 'Schedule view per job: bars, critical path, slack, promised and today lines', 'Staff, engineer, manager', 'A1'], ['R3', 'Agent actions queue: drafted steps that wait for a person to approve', 'Staff, engineer, manager', 'A1'], ['R4', 'Management KPIs: jobs at risk, total projected slip, median slack', 'Manager, management', 'A1'], ['R5', 'Cost check in the engineer review', 'Engineer', 'A2'], ['R6', 'Permit durations, tier conversion, technician utilization', 'Manager, management', 'A3–A5'], ['R7', 'Bill insights (supporting view, not a headline analytic)', 'Customer', 'Model']];
+    const U = Object.keys(D.DURATIONS), T = [['T2', 'Permit package prep', 'T2'], ['T3', 'Permit processing', 'T3'], ['T4', 'Materials', 'T4'], ['T4b', 'Materials with battery', 'T4batt'], ['T5', 'Work order / crew slot', 'T5'], ['T6', 'Installation', 'T6'], ['T7', 'QA and turnover', 'T7']];
+    return `<h1>Analytics specification</h1><p class="sub">Problem → data → method → report. Draft for the proposal; validate with the client.</p>
+      <div class="card"><h2>Three innovations aimed at efficiency</h2><ol><li><b>Agentic AI.</b> A rule-based agent reads the Zenith result, drafts the next step (reminders, supplier confirmations, reassignments) and stops at a human approval gate. It is simulated here and is not a language model.</li><li><b>Design-based cost optimization.</b> The system finds the lowest-cost design that meets the customer&rsquo;s goal and shows the gap to what was configured.</li><li><b>Zenith, CPM analytics for delay prioritization.</b> Critical path and slack per job, ranked so staff work on the job that will slip most first.</li></ol></div>
+      <div class="card"><table><tr><th></th><th>Problem solved</th><th>Stage</th><th>Audience</th><th>Data needed</th><th>Data status</th><th>Method</th></tr>${A.map(a => `<tr><td><b>${a[0]}</b></td>${a.slice(1).map(c => `<td class="small">${c}</td>`).join('')}</tr>`).join('')}</table></div>
+      <div class="card"><h2>Task durations used by Zenith <span class="sim">assumptions</span></h2><p class="muted small">Days. One table per utility so real values can replace these. Reported 2026 rules (LGU permits about 3 working days, net metering about 10 working days) are unverified and must be checked with the client before they replace these numbers.</p><table><tr><th>Task</th>${U.map(u => `<th>${u}</th>`).join('')}</tr>${T.map(t => `<tr><td>${t[1]}</td>${U.map(u => `<td>${D.DURATIONS[u][t[2]]}</td>`).join('')}</tr>`).join('')}</table>
+        <p class="muted small">Order: T2 → T3; T3, T4 and T5 → T6 → T7. Dates count from quote acceptance. The promised install start is set at acceptance (${D.PROMISE_DAYS} days) and never moves. CPM ignores how many crews or staff are free, apart from the technician&rsquo;s next free day for the work order.</p></div>
       <div class="card"><h2>Reports</h2><table><tr><th></th><th>Report</th><th>Audience</th><th>Built from</th></tr>${R.map(r => `<tr><td><b>${r[0]}</b></td><td>${r[1]}</td><td>${r[2]}</td><td>${r[3]}</td></tr>`).join('')}</table></div>`;
   }
   function usersView() {
-    const rows = [['Customer', 'Own estimate, project status, documents, bill insights', 'Accepts quotation', 'TBC'], ['Intake / permit staff', 'Intake, permit packages, all open items', 'Verify data, release quote, submit permits', 'TBC'], ['Site engineer', 'Assessments, quotations, variance warnings', 'Assessment, quotation', 'TBC'], ['Manager', 'Pipeline, permit and technician reports, tier conversion', 'Quotation, assignments', 'TBC'], ['QA', 'Installation evidence', 'Turnover', 'TBC'], ['Technician', 'Only own work orders', 'Milestones', 'TBC'], ['Management / admin', 'All dashboards, KPI summary, users and roles', 'After-sales action plans', 'TBC']];
+    const rows = [['Customer', 'Own estimate, project status, documents, bill insights', 'Accepts quotation', 'TBC'], ['Intake / permit staff', 'Intake, permit packages, all open items', 'Verify data, release quote, submit permits', 'TBC'], ['Site engineer', 'Assessments, quotations, cost check, delay priorities', 'Assessment, quotation', 'TBC'], ['Manager', 'Pipeline, permit and technician reports, tier conversion', 'Quotation, assignments', 'TBC'], ['QA', 'Installation evidence', 'Turnover', 'TBC'], ['Technician', 'Only own work orders', 'Milestones', 'TBC'], ['Management / admin', 'All dashboards, KPI summary, users and roles', 'Delay priorities, closure review', 'TBC']];
     return `<h1>Users &amp; roles</h1><p class="sub">Use the “Viewing as” selector to see what each role gets. User counts are open questions for the client.</p><div class="card"><table><tr><th>Role</th><th>Sees</th><th>Approves / acts</th><th>Users</th></tr>${rows.map(r => `<tr>${r.map(c => `<td>${c}</td>`).join('')}</tr>`).join('')}</table></div>`;
   }
 
@@ -823,7 +903,7 @@
     if (!S.authed) { document.title = 'Sign in | SolarFlow'; $('#view').innerHTML = loginView(); return; }
     const hash = location.hash.replace(/^#\/?/, '').split('/'); let route = hash[0] || allowed()[0], arg = hash[1];
     if (route === 'project') { if (S.role === 'customer') route = 'myproject'; } else if (!allowed().includes(route)) { location.hash = '#/' + allowed()[0]; return; }
-    const views = { estimator: estimatorView, myproject: myProjectView, insights: insightsView, pipeline: pipelineView, permits: permitsView, workorders: workordersView, analytics: analyticsView, spec: specView, users: usersView, project: () => detailView(arg) };
+    const views = { estimator: estimatorView, myproject: myProjectView, insights: insightsView, pipeline: pipelineView, priorities: prioritiesView, permits: permitsView, workorders: workordersView, analytics: analyticsView, spec: specView, users: usersView, project: () => detailView(arg) };
     const key = route + (arg || '') + (route === 'estimator' && UI.est ? ':' + UI.est.step : '');
     $('#view').innerHTML = (views[route] || pipelineView)();
     const v = $('#view'); if (UI.lastKey !== key) { v.classList.remove('view-in'); void v.offsetWidth; v.classList.add('view-in'); UI.lastKey = key; }
@@ -900,19 +980,30 @@
       S.projects.push(p); S.myProject = id; save(); toast('Request sent to the site engineer'); location.hash = '#/myproject'; },
     open(d, el) { if (el && el.tagName === 'A') return; location.hash = '#/project/' + d.id; },
     approve(d) { const p = P(d.id); if (!p) return; if (S.role === 'engineer' && p.stage === 1) { UI.tab['d' + d.id] = 'sr'; toast('Use the Site review tab to decide'); location.hash = '#/project/' + d.id; render(); return; } const g = GATES[p.stage]; if (!g || !g.need.includes(S.role) || p.approvals[p.stage].includes(S.role)) return; p.approvals[p.stage].push(S.role); log(p, 'Approved stage ' + p.stage + ' gate'); advance(p); save(); render(); },
-    accept(d) { const p = P(d.id); p.accepted = true; p.stage = 4; D.startExec(p, 'blank', 0, null);
+    accept(d) { const p = P(d.id); p.accepted = true; p.stage = 4; D.startExec(p, 'blank', 0, null); p.sched = D.mkSched(p, S.demoDay, { T2: { start: 0 }, T4: { start: 0 }, T5: { start: 0 } });
       p.permit.items.forEach(i => { if (/application form|permit application/i.test(i.n)) { i.status = 'pending'; i.source = 'prefilled'; i.days = 0; } if (i.n === 'Latest electric bill') { i.status = 'ok'; i.source = 'uploaded'; } });
-      log(p, 'Customer accepted quotation; permit preparation and installation started in parallel', 'Customer'); save(); toast('Quotation accepted'); render(); },
+      log(p, 'Customer accepted quotation; promised install start set to ' + promDate(p) + '; permit preparation and materials started in parallel', 'Customer'); save(); toast('Quotation accepted'); render(); },
     upload(d) { const p = P(d.id), i = p.permit.items[+d.k]; i.status = 'ok'; i.source = 'uploaded'; log(p, 'Uploaded “' + i.n + '” — data extracted to prefill forms (simulated OCR)', 'Customer'); save(); toast('Uploaded and read'); render(); },
     received(d) { const p = P(d.id), i = p.permit.items[+d.k]; i.status = 'ok'; i.source = i.source || 'physical'; log(p, 'Marked received: ' + i.n); save(); render(); },
-    submitPermit(d) { const p = P(d.id); p.permit.submitted = true; log(p, 'Permit package confirmed and submitted'); save(); render(); },
-    utilOk(d) { const p = P(d.id); p.permit.approved = true; p.nmFrom = 0; log(p, 'Utility/LGU approval recorded (demo)'); save(); render(); },
-    assign(d) { const p = P(d.id); p.install.tech = d.n; log(p, 'Assigned technician ' + d.n + ' to ' + p.city + ' address'); save(); render(); },
-    milestone(d, el) { const p = P(d.id); p.install.milestones[+d.k].done = el.checked; save(); render(); },
-    qa(d) { const p = P(d.id); p.install.qa = true; p.stage = 6; log(p, 'QA approved; project turned over to after-sales'); save(); render(); },
+    submitPermit(d) { const p = P(d.id); p.permit.submitted = true; log(p, 'Permit package confirmed and submitted'); syncSched(p); save(); render(); },
+    utilOk(d) { const p = P(d.id); p.permit.approved = true; p.nmFrom = 0; log(p, 'Utility/LGU approval recorded (demo)'); syncSched(p); save(); render(); },
+    assign(d) { const p = P(d.id); p.install.tech = d.n; log(p, 'Assigned technician ' + d.n + ' to ' + p.city + ' address'); syncSched(p); save(); render(); },
+    milestone(d, el) { const p = P(d.id); p.install.milestones[+d.k].done = el.checked; syncSched(p); save(); render(); },
+    qa(d) { const p = P(d.id); p.install.qa = true; p.stage = 6; log(p, 'QA approved; project closed and turned over'); syncSched(p); save(); render(); },
     action(d) { const p = P(d.id); p.actionApproved = true; log(p, 'Action plan approved'); save(); render(); },
     ticket(d) { P(d.id).ticket = true; save(); toast('Ticket opened'); render(); },
     weather(d) { UI.rainy = d.w === '1'; render(); },
+    adv(d) { S.demoDay += +d.n; save(); render(); toast('Demo clock: day ' + S.demoDay + ' (simulated)'); },
+    resetclock() { S.demoDay = D.DEMO_DAY; save(); render(); },
+    zopen(d) { UI.tab['d' + d.id] = 'sc'; location.hash = '#/project/' + d.id; },
+    agok(d) { const p = P(d.id), it = agentItems().find(x => x.key === d.key); if (!it || !canApprove()) return; S.approved[d.key] = S.demoDay; log(p, 'Approved agent action: ' + it.a.text, undefined, 'agent'); save(); toast('Approved. Nothing is sent until staff act on it.'); render(); },
+    tdone(d) { const p = P(d.id), t = p.sched.tasks;
+      if (d.t === 'T2') { p.permit.submitted = true; log(p, 'Permit package marked complete (simulated)'); }
+      else if (d.t === 'T3') { p.permit.submitted = true; syncSched(p); p.permit.approved = true; p.nmFrom = 0; log(p, 'Utility/LGU approval recorded (simulated)'); }
+      else if (d.t === 'T4') { (t.T4 = t.T4 || {}).done = jobDay(p); log(p, 'Materials delivered (simulated)'); }
+      else if (d.t === 'T5') { p.install.tech = techScores(p)[0].t.name; log(p, 'Work order issued; technician ' + p.install.tech + ' assigned (simulated)'); }
+      syncSched(p); save(); render(); },
+    tdelay(d) { const p = P(d.id), r = zen(p), t = p.sched.tasks[d.t] = p.sched.tasks[d.t] || {}; t.expected = r.tasks[d.t].ef + 3; log(p, 'Simulated delay: ' + r.tasks[d.t].name + ' now expected on day ' + t.expected); save(); render(); },
     antab(d) { UI.tab.an = d.t; render(); },
     dtab(d) { UI.tab['d' + d.id] = d.t; renderView(); }
   };

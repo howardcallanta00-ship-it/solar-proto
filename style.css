@@ -510,3 +510,31 @@ body[data-mode=staff] main{margin:0;width:100%;box-sizing:border-box}
 @media (max-width:980px){.wizhead .steps{overflow-x:auto;max-width:100%;flex-wrap:nowrap}.wizhead .steps button{flex:none}.wizhead{min-width:0}}
 .ft>*,.ft-l,.ft-r{min-width:0}.plancard svg{max-width:100%}
 .cform{display:grid;grid-template-columns:1fr 1fr;gap:10px}.cform label{display:flex;flex-direction:column;font-size:.85rem;gap:3px}.cform select,.cform input{min-height:38px;border:1px solid #D9CDAE;border-radius:9px;padding:0 10px;font:inherit;background:#fff}
+
+/* ---- Zenith (CPM) ---- */
+.democtl{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+.democtl .row{display:flex;gap:8px;flex-wrap:wrap}
+.tscroll{overflow-x:auto}
+.zt td{vertical-align:top}
+.zt .zact{min-width:240px;font-size:.86rem}
+.chip.agent{background:#E8E1F7;color:#4B3A8C}
+.aglist{list-style:none;margin:0;padding:0}
+.agrow{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;padding:10px 0;border-top:1px solid var(--line,#e3e8ec)}
+.agrow p{margin:4px 0 0;font-size:.9rem}
+.agrow button{color:#fff}
+.gantt{width:100%;min-width:640px;height:auto}
+.gantt .gg{stroke:#dfe5ea;stroke-width:1}
+.gantt .gt{font-size:10px;fill:#6b7882}
+.gantt .gl{font-size:12px;fill:#1c2b3a}
+.gantt .gb.crit{fill:#D9534F}.gantt .gb.norm{fill:#4F8FC0}.gantt .gb.done{fill:#7BB78A}
+.gantt .gs{fill:none;stroke:#4F8FC0;stroke-width:1.5;stroke-dasharray:4 3}
+.gantt .gp{stroke:#E39B00;stroke-width:2;stroke-dasharray:6 4}
+.gantt .gn{stroke:#1c2b3a;stroke-width:2}
+.gantt .gtp{font-size:10.5px;fill:#9a6700}.gantt .gtn{font-size:10.5px;fill:#1c2b3a}
+.legend{display:flex;gap:6px;align-items:center;flex-wrap:wrap;font-size:.82rem;margin-bottom:6px}
+.legend .lg{display:inline-block;width:14px;height:10px;border-radius:3px;margin-left:10px}
+.lg.crit{background:#D9534F}.lg.norm{background:#4F8FC0}.lg.done{background:#7BB78A}.lg.gs{border:1.5px dashed #4F8FC0}
+.promise .big{font-size:1.5rem}
+td>b+small.sm,.grid>div>div>b+small.sm{display:block}
+@media(max-width:700px){.zt .zact{min-width:200px}.agrow{flex-direction:column}}
+@media(max-width:700px){.zt th:nth-child(2),.zt td:nth-child(2){display:table-cell}}

@@ -72,6 +72,21 @@
     p.log.push({ t: 'Inquiry received — customer picked ' + M.TIERS[o.tier].label + ' tier (preference)' + (o.note || ''), who: 'Customer' });
     return p;
   }
+  // ---- Zenith (CPM) inputs. ONE editable duration table; every figure is an assumption to validate with the client. ----
+  // Days. T2 permit package prep, T3 permit processing (utility/LGU, external), T4 materials (T4batt with a battery), T5 work order and crew slot, T6 installation, T7 QA and turnover.
+  const DURATIONS = {
+    'Meralco':          { T2: 4, T3: 10, T4: 7, T4batt: 12, T5: 2, T6: 3, T7: 1 },
+    'Visayan Electric': { T2: 4, T3: 10, T4: 7, T4batt: 12, T5: 2, T6: 3, T7: 1 },
+    'Davao Light':      { T2: 4, T3: 10, T4: 7, T4batt: 12, T5: 2, T6: 3, T7: 1 },
+    'Electric cooperative': { T2: 4, T3: 10, T4: 7, T4batt: 12, T5: 2, T6: 3, T7: 1 }
+  };
+  const PROMISE_DAYS = 14;            // promised install start = Day 14 after the customer accepts the quote (frozen at acceptance)
+  const DEMO_DAY = 20, DEMO_BASE = Date.UTC(2026, 10, 1); // demo clock: Day 20 = Nov 21, 2026. Day offsets only, no Date.now.
+  const dayDate = n => new Date(DEMO_BASE + n * 86400000).toLocaleDateString('en-PH', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+  // schedule for an accepted job. acceptedDay is on the demo clock; tasks hold job-relative days (0 = acceptance day).
+  function mkSched(p, acceptedDay, tasks) {
+    return { acceptedDay, promised: PROMISE_DAYS, dur: Object.assign({}, DURATIONS[p.utility]), tasks: tasks || {}, agent: [] };
+  }
   function startExec(p, permitMode, doneMilestones, tech) {
     const r = rng(hash(p.id + 'x'));
     p.permit = { items: permitItems(p.utility, r, permitMode), submitted: false, approved: false };
@@ -93,15 +108,19 @@
     p = mk({ id: 'P-1003', name: 'Garcia Residence', city: 'Davao City', utility: 'Davao Light', tier: 'high', kwh: 720, dayShare: 0.3, stage: 3 });
     p.approvals[1] = ['engineer', 'staff']; p.approvals[2] = ['engineer', 'manager']; p.released = true; P.push(p);
     p = mk({ id: 'P-1004', name: 'Reyes Residence', city: 'Marikina', utility: 'Meralco', tier: 'value', kwh: 520, dayShare: 0.33, stage: 6, nmFrom: 5, growth: 0.12 });
-    startExec(p, 'ok', 7, 'R. Dizon'); p.permit.submitted = true; p.permit.approved = true; p.install.qa = true; p.accepted = true; P.push(p);
+    startExec(p, 'ok', 7, 'R. Dizon'); p.permit.submitted = true; p.permit.approved = true; p.install.qa = true; p.accepted = true;
+    p.sched = mkSched(p, -60, { T2: { start: 0, done: 4 }, T3: { start: 4, done: 15 }, T4: { start: 0, done: 7 }, T5: { start: 0, done: 2 }, T6: { start: 15, done: 18 }, T7: { start: 18, done: 19 } }); P.push(p);
     p = mk({ id: 'P-1005', name: 'Villanueva Residence', city: 'Antipolo', utility: 'Meralco', tier: 'value', kwh: 600, dayShare: 0.38, stage: 4, accepted: true });
-    startExec(p, 'messy', 3, 'R. Dizon'); P.push(p);
+    startExec(p, 'messy', 3, 'R. Dizon'); p.sched = mkSched(p, 14, { T2: { start: 0, expected: 7 }, T5: { start: 0, done: 2 } }); p.sched.note = 'Signed application form missing, expected back Day 7'; P.push(p);
     p = mk({ id: 'P-1006', name: 'Bautista Residence', city: 'Tarlac City', utility: 'Electric cooperative', tier: 'low', kwh: 400, dayShare: 0.45, stage: 4, accepted: true });
-    startExec(p, 'ok', 7, 'J. Cruz'); p.permit.submitted = true; P.push(p);
+    startExec(p, 'ok', 7, 'J. Cruz'); p.permit.submitted = true; p.sched = mkSched(p, 10, { T2: { start: 0, done: 3 }, T3: { start: 3 }, T4: { start: 0, done: 6 }, T5: { start: 0, done: 2 } }); P.push(p);
     p = mk({ id: 'P-1007', name: 'Mendoza Residence', city: 'Mandaue', utility: 'Visayan Electric', tier: 'value', kwh: 540, dayShare: 0.3, stage: 4, accepted: true });
-    startExec(p, 'ok', 0, null); P.push(p);
+    startExec(p, 'ok', 0, null); p.permit.submitted = true; p.sched = mkSched(p, 11, { T2: { start: 0, done: 4 }, T3: { start: 4 }, T4: { start: 0, expected: 12 }, T5: { start: 0, done: 2 } }); p.sched.note = 'Battery order arrives Day 12'; P.push(p);
+    p = mk({ id: 'P-1011', name: 'Santiago Residence', city: 'Makati', utility: 'Meralco', tier: 'low', kwh: 420, dayShare: 0.4, stage: 4, accepted: true });
+    startExec(p, 'ok', 0, null); p.permit.submitted = true; p.sched = mkSched(p, 17, { T2: { start: 0, done: 2 }, T3: { start: 2 }, T5: { start: 0, done: 2 } }); P.push(p);
     p = mk({ id: 'P-1008', name: 'Aquino Residence', city: 'Mandaluyong', utility: 'Meralco', tier: 'high', kwh: 800, dayShare: 0.28, stage: 6, nmFrom: null, growth: 0.15 });
-    startExec(p, 'ok', 7, 'R. Dizon'); p.permit.submitted = true; p.accepted = true; p.install.qa = true; p.ticket = true; P.push(p);
+    startExec(p, 'ok', 7, 'R. Dizon'); p.permit.submitted = true; p.accepted = true; p.install.qa = true; p.ticket = true;
+    p.sched = mkSched(p, -45, { T2: { start: 0, done: 6 }, T3: { start: 6, done: 16 }, T4: { start: 0, done: 12 }, T5: { start: 0, done: 2 }, T6: { start: 16, done: 19 }, T7: { start: 19, done: 20 } }); P.push(p);
     // site review examples: one waiting on the customer, one returned to the customer
     const roof = { mode: 'size', size: 'M', dir: 'south', shade: 'some', type: 'flat' };
     const g = { type: 'cover', pct: 80 };
@@ -140,7 +159,7 @@
   let _an = null;
   function analytics() {
     if (_an) return _an; const r = rng(2026), rows = [], U = Object.keys(UTILITIES);
-    const utilParams = { 'Meralco': [18, 7, 0.45, 58], 'Visayan Electric': [13, 5, 0.30, 45], 'Davao Light': [10, 4, 0.22, 40], 'Electric cooperative': [23, 9, 0.50, 75] };
+    const utilParams = { 'Meralco': [5, 2, 0.45, 12], 'Visayan Electric': [4, 1.5, 0.30, 10], 'Davao Light': [4, 1.5, 0.22, 9], 'Electric cooperative': [6, 2.5, 0.50, 16] }; // sample data scaled to the duration assumptions above
     const missPool = { 'Meralco': ['Single-line diagram (PEE-signed)', 'Proof of ownership / lease consent', 'Barangay clearance'], 'Visayan Electric': ['Notarized affidavit of consent', 'Signed & sealed plans', 'Latest electric bill'],
       'Davao Light': ['Meter reading certificate', 'Lot title or authorization letter', 'Site photos'], 'Electric cooperative': ['Membership certificate', 'Cooperative clearance', 'Lot title or authorization letter'] };
     const gauss = () => (r() + r() + r() - 1.5) / 0.5;
@@ -155,7 +174,7 @@
       rows.push({ id: 'S-' + (2000 + i), utility, tier, promised: pr.bill, actual: c.bill, gap: c.bill - pr.bill,
         parts: { weather: a.bill - pr.bill, load: b.bill - a.bill, nm: c.bill - b.bill }, nm,
         prep: Math.max(3, Math.round(up[0] + gauss() * up[1] + (returned ? 6 : 0))), returned, missing: returned ? missPool[utility][Math.floor(r() * 3)] : null,
-        approval: Math.max(14, Math.round(up[3] + gauss() * 15)), tech: TECHS[Math.floor(r() * TECHS.length)].name, jobDays: Math.max(2, Math.round(4 + gauss() * 1.5)) });
+        approval: Math.max(6, Math.round(up[3] + gauss() * 3)), tech: TECHS[Math.floor(r() * TECHS.length)].name, jobDays: Math.max(2, Math.round(4 + gauss() * 1.5)) });
     }
     const funnel = { low: { pick: 0, quote: 0, accept: 0 }, value: { pick: 0, quote: 0, accept: 0 }, high: { pick: 0, quote: 0, accept: 0 } }, deltas = [];
     for (let i = 0; i < 140; i++) {
@@ -166,6 +185,6 @@
     _an = { rows, funnel, deltas, techs, utilities: U }; return _an;
   }
 
-  const api = { propose, mk, startExec, rng, hash, UTILITIES, CITIES, regionOf, APPLIANCES, TECHS, MILESTONES, appStats, seedProjects, series, analytics };
+  const api = { DURATIONS, PROMISE_DAYS, DEMO_DAY, dayDate, mkSched, propose, mk, startExec, rng, hash, UTILITIES, CITIES, regionOf, APPLIANCES, TECHS, MILESTONES, appStats, seedProjects, series, analytics };
   if (typeof module !== 'undefined') module.exports = api; else root.DATA = api;
 })(typeof window !== 'undefined' ? window : globalThis);
