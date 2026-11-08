@@ -64,8 +64,11 @@
     const p = Object.assign({
       stage: 1, rate, dayShare, extras: {}, approvals: { 1: [], 2: [], 3: [] }, released: false, accepted: false,
       indicative: s, quoteDelta: (r() * 0.12 - 0.02), log: [], appKwh: kwh, nmFrom: null, growth: 0.1, ticket: false, actionApproved: false,
-      permit: null, install: null
+      permit: null, install: null,
+      ver: 1, rev: null, site: null,
+      roof: { mode: 'size', size: 'M', dir: 'south', shade: 'none', type: 'flat' }, goal: { type: 'usual' }
     }, o, { size: s });
+    p.cfg = o.cfg || Object.assign({}, M.template(o.tier, kwh), { roof: 'flat', yf: 1 });
     p.log.push({ t: 'Inquiry received — customer picked ' + M.TIERS[o.tier].label + ' tier (preference)' + (o.note || ''), who: 'Customer' });
     return p;
   }
@@ -75,6 +78,12 @@
     p.install = { milestones: MILESTONES.map((n, i) => ({ n, done: i < doneMilestones })), tech: tech || null, qa: false };
   }
 
+  // engineer proposes a changed design (version 2); the customer's version 1 stays on record
+  function propose(p, cfg2, reasons, note, status, by) {
+    const cfg1 = Object.assign({}, p.cfg);
+    p.rev = { status: status || 'awaiting', by: by || 'Engineer', v1: { cfg: cfg1, size: M.sizeCfg(p.tier, p.kwh, p.dayShare, p.rate, cfg1) }, v2: { cfg: cfg2, size: M.sizeCfg(p.tier, p.kwh, p.dayShare, p.rate, cfg2) }, reasons: reasons || [], note: note || '' };
+    p.ver = 2; return p;
+  }
   function seedProjects() {
     const P = [];
     let p = mk({ id: 'P-1001', name: 'Santos Residence', city: 'Quezon City', utility: 'Meralco', tier: 'value', kwh: 480, dayShare: 0.35, stage: 1, appKwh: 330 });
@@ -93,7 +102,20 @@
     startExec(p, 'ok', 0, null); P.push(p);
     p = mk({ id: 'P-1008', name: 'Aquino Residence', city: 'Mandaluyong', utility: 'Meralco', tier: 'high', kwh: 800, dayShare: 0.28, stage: 6, nmFrom: null, growth: 0.15 });
     startExec(p, 'ok', 7, 'R. Dizon'); p.permit.submitted = true; p.accepted = true; p.install.qa = true; p.ticket = true; P.push(p);
-    // after-sales series for customers
+    // site review examples: one waiting on the customer, one returned to the customer
+    const roof = { mode: 'size', size: 'M', dir: 'south', shade: 'some', type: 'flat' };
+    const g = { type: 'cover', pct: 80 };
+    p = mk({ id: 'P-1009', name: 'Tan Residence', city: 'Quezon City', utility: 'Meralco', tier: 'value', kwh: 520, dayShare: 0.35, stage: 1, appKwh: 480, roof, goal: g, cfg: { panels: 8, batt: 5, mon: false, roof: 'flat', yf: 0.85 } });
+    propose(p, { panels: 6, batt: 5, mon: false, roof: 'flat', yf: 0.85 }, [{ k: 'panels', reason: 'Part of the roof is in shade after 2 pm, so two panels there would make little power.' }, { k: 'area', reason: 'Measured on site: 27 m² usable, not 30 m².' }], 'If you want to stay near 80%, we could trim the trees on the west side. Then all eight panels would work. I can re-check after.', 'awaiting', 'A. Ramos');
+    p.rev.v1.area = 30; p.rev.v2.area = 27;
+    p.log.push({ t: 'Site assessment done. Proposed design version 2: 6 panels and 5 kWh battery instead of 8 panels and 5 kWh battery. Waiting for the customer.', who: 'A. Ramos', at: Date.now() - 86400000, k: 'rev' });
+    p.site = { checks: { roof: { r: 'pass', why: '' }, area: { r: 'adjust', why: 'Measured 36 m², 27 m² usable' }, shade: { r: 'adjust', why: 'West side shaded after 2 pm by the neighbour’s wall' }, elec: { r: 'pass', why: '' }, batt: { r: 'pass', why: '' }, util: { r: 'pass', why: '' } }, usable: 27, photos: 4, note: '' };
+    P.push(p);
+    p = mk({ id: 'P-1010', name: 'Ocampo Residence', city: 'Marikina', utility: 'Meralco', tier: 'value', kwh: 430, dayShare: 0.33, stage: 1, appKwh: 400, roof: Object.assign({}, roof, { shade: 'none' }), goal: { type: 'budget', amount: 300000 } });
+    p.rev = { status: 'returned', by: 'A. Ramos', why: 'The electrical panel has no free breaker space for the solar circuit.', fix: 'Ask your electrician to add a breaker slot, then send your design again.', v1: { cfg: p.cfg } };
+    p.log.push({ t: 'Returned to the customer. Reason: ' + p.rev.why + ' To fix: ' + p.rev.fix, who: 'A. Ramos', at: Date.now() - 2 * 86400000, k: 'rev' });
+    p.site = { checks: { roof: { r: 'pass', why: '' }, area: { r: 'pass', why: '' }, shade: { r: 'pass', why: '' }, elec: { r: 'fail', why: 'No free breaker space' }, batt: { r: 'pass', why: '' }, util: { r: 'pass', why: '' } }, usable: 30, photos: 3, note: '' };
+    P.push(p);
     return P;
   }
 
@@ -145,6 +167,6 @@
     _an = { rows, funnel, deltas, techs, utilities: U }; return _an;
   }
 
-  const api = { mk, startExec, rng, hash, UTILITIES, CITIES, regionOf, APPLIANCES, TECHS, MILESTONES, appStats, seedProjects, series, analytics };
+  const api = { propose, mk, startExec, rng, hash, UTILITIES, CITIES, regionOf, APPLIANCES, TECHS, MILESTONES, appStats, seedProjects, series, analytics };
   if (typeof module !== 'undefined') module.exports = api; else root.DATA = api;
 })(typeof window !== 'undefined' ? window : globalThis);
