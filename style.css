@@ -509,3 +509,4 @@ body[data-mode=staff] main{margin:0;width:100%;box-sizing:border-box}
 @media (max-width:560px){.wizbar{flex-wrap:wrap;gap:8px}.wizbar .sp{display:none}.wizbar .big-b{flex:1 1 100%;order:3;min-height:46px}.wizbar .link{flex:1;text-align:left}.wizbar .line{order:1}.wizbar .link,.wizbar .hide-s{order:2}}
 @media (max-width:980px){.wizhead .steps{overflow-x:auto;max-width:100%;flex-wrap:nowrap}.wizhead .steps button{flex:none}.wizhead{min-width:0}}
 .ft>*,.ft-l,.ft-r{min-width:0}.plancard svg{max-width:100%}
+.cform{display:grid;grid-template-columns:1fr 1fr;gap:10px}.cform label{display:flex;flex-direction:column;font-size:.85rem;gap:3px}.cform select,.cform input{min-height:38px;border:1px solid #D9CDAE;border-radius:9px;padding:0 10px;font:inherit;background:#fff}

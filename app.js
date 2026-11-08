@@ -65,7 +65,7 @@
     insights: '<path d="M3 17l5-5 4 4 8-9"/><path d="M15 7h5v5"/>'
   };
   const ico = k => `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[k] || ''}</svg>`;
-  function isWait(p) { if (p.stage === 1 && p.rev && (p.rev.status === 'awaiting' || p.rev.status === 'returned')) return false; const g = GATES[p.stage]; return !!g && g.need.includes(S.role) && !p.approvals[p.stage].includes(S.role) && !(p.stage === 3 && !p.released && S.role !== 'staff'); }
+  function isWait(p) { if (p.stage === 1 && p.rev && p.rev.status === 'awaiting') return false; const g = GATES[p.stage]; return !!g && g.need.includes(S.role) && !p.approvals[p.stage].includes(S.role) && !(p.stage === 3 && !p.released && S.role !== 'staff'); }
   function notes() {
     const out = [];
     if (S.role === 'customer') {
@@ -512,8 +512,9 @@
   }
   const custUsable = p => Math.round(M.roofFit(p.roof || {}, p.cfg.roof).usable);
   function stateTag(p) {
-    const r = p.rev; if (p.stage !== 1 || !r) return null;
-    return { awaiting: ['Awaiting customer reply', 'warn'], returned: ['Returned to customer', 'bad'], asked: ['Customer asked a question', 'warn'], original: ['Kept original, second visit needed', 'info'], accepted: ['Customer accepted version 2', 'ok'] }[r.status] || null;
+    const r = p.rev; if (p.stage !== 1) return null;
+    if (!r) return p.contact && p.contact.done ? ['Contacted, proposal due', 'info'] : ['Contact customer first', 'warn'];
+    return { awaiting: ['Awaiting customer reply', 'warn'], asked: ['Customer asked a question', 'warn'], accepted: ['Customer agreed to proposal', 'ok'] }[r.status] || null;
   }
   const tagChip = p => { const t = stateTag(p); return t ? `<span class="chip ${t[1]}">${t[0]}</span>` : ''; };
   function revRows(p) {
@@ -526,7 +527,7 @@
       { l: 'Covers your use', a: pct(a.cover), b: pct(b.cover), why: '', ch: Math.abs(b.cover - a.cover) > 0.005 }];
   }
   function engineerReview(p) {
-    const s = siteOf(p), r = p.rev, staff = S.role === 'engineer', st = r && r.status, locked = !staff || p.stage !== 1 || st === 'awaiting' || st === 'accepted';
+    const s = siteOf(p), r = p.rev, staff = S.role === 'engineer', st = r && r.status, contact = p.contact && p.contact.done, locked = !staff || p.stage !== 1 || st === 'awaiting' || st === 'accepted' || !contact;
     const cap = Math.max(1, Math.min(M.ROOF_MAX, Math.floor(s.usable / M.PANEL_AREA))), d = s.draft, v1 = RZ(p, p.cfg), v2 = RZ(p, d), same = d.panels === p.cfg.panels && d.batt === p.cfg.batt && d.mon === p.cfg.mon;
     const gl = goalCheck(p.goal, v2, v1.paybackNM);
     const ck = CHECKS.map(c => { const x = s.checks[c[0]], sg = ['pass', 'adjust', 'fail'].map(k => `<button class="${x.r === k ? k : ''}" data-act="sck" data-id="${p.id}" data-k="${c[0]}" data-v="${k}" aria-pressed="${x.r === k}" ${locked ? 'disabled' : ''}>${k[0].toUpperCase() + k.slice(1)}</button>`).join('');
@@ -537,56 +538,49 @@
     const imp = `<div class="imp"><div><small>Price</small><b>${peso(v2.cost)}</b> ${dl(v1.cost, v2.cost, peso, true)}</div><div><small>Output</small><b>${kw1(v2.kw)} kW</b> ${dl(v1.kw, v2.kw, n => kw1(n), false)}</div><div><small>Covers</small><b>${pct(v2.cover)}</b> ${dl(v1.cover, v2.cover, n => Math.round(n * 100) + ' pts', false)}</div><div><small>Payback</small><b>${yrs(v2.paybackNM)}</b> ${dl(v1.paybackNM, v2.paybackNM, n => n.toFixed(1), true)}</div></div>`;
     const err = UI.engErr && UI.engErr.id === p.id ? `<div class="flag bad" role="alert">${esc(UI.engErr.t)}</div>` : '';
     const ask = st === 'asked' ? `<div class="card"><h3>Customer question</h3><p>“${esc(r.question)}”</p>${staff ? `<textarea data-site="reply" rows="2" placeholder="Your answer" aria-label="Your answer">${esc(s.reply || '')}</textarea><button class="alt" data-act="revReply" data-id="${p.id}">Send answer</button>` : ''}</div>` : '';
-    const banner = st === 'awaiting' ? '<div class="flag info">Version 2 was sent. Waiting for the customer to accept, ask a question or keep their original.</div>' : st === 'returned' ? `<div class="flag warn">Returned to the customer. Reason: ${esc(r.why)} To fix: ${esc(r.fix)}</div>` : st === 'original' ? '<div class="flag warn">The customer kept their original design. A second site visit is needed. Decide again after it.</div>' : st === 'accepted' ? '<div class="flag ok">The customer accepted version 2.</div>' : '';
-    return `${banner}${ask}<div class="grid g2"><section class="card"><h3>1. Site checks</h3><p class="muted small" style="margin:0 0 4px">Any Adjust or Fail needs a reason the customer will read.</p>${ck}
+    const ct = p.contact || {}, cbox = contact ? `<div class="flag ok"><b class="who">Customer contacted</b>${esc(ct.method)} on ${esc(ct.when)}. ${esc(ct.notes)}</div>` : (staff && p.stage === 1 ? `<div class="card"><h3>0. Contact the customer first</h3><p class="muted small" style="margin:0 0 8px">Before any checks or changes, call, message or meet the customer. Record what you agreed. Site checks and the proposal unlock after this.</p><div class="cform"><label>How<select data-site="cmethod"><option>Phone call</option><option>Message</option><option>Meeting at the site</option></select></label><label>Date<input type="date" data-site="cwhen" value="${esc(s.cwhen || new Date().toISOString().slice(0, 10))}"></label></div><label class="small" style="display:block;margin-top:8px">What was discussed and agreed<textarea data-site="cnotes" rows="2" placeholder="For example: confirmed goal, roof access, visit on Thursday">${esc(s.cnotes || '')}</textarea></label><button class="alt" style="margin-top:8px" data-act="contact" data-id="${p.id}">Record contact</button>${UI.engErr && UI.engErr.id === p.id ? `<div class="flag bad" role="alert">${esc(UI.engErr.t)}</div>` : ''}</div>` : '');
+    const banner = st === 'awaiting' ? '<div class="flag info">Your proposal was sent. Waiting for the customer to agree or ask a question.</div>' : st === 'accepted' ? '<div class="flag ok">The customer agreed to your proposal.</div>' : '';
+    return `${cbox}${banner}${ask}<div class="grid g2"><section class="card"><h3>1. Site checks</h3><p class="muted small" style="margin:0 0 4px">Any Adjust or Fail needs a reason the customer will read.</p>${ck}
         <div class="sitebtns"><button class="line" data-act="photo" data-id="${p.id}" ${locked ? 'disabled' : ''}>Add site photos (${s.photos})</button></div><label class="small" style="display:block;margin-top:8px">Note for the customer<textarea data-site="note" rows="2" ${locked ? 'disabled' : ''} placeholder="Anything else the customer should know">${esc(s.note)}</textarea></label></section>
       <section style="display:flex;flex-direction:column;gap:14px"><div class="card"><h3>2. Change the design <span class="chip">Customer's version stays on record</span></h3>
         <div class="dr h"><span>Item</span><span>Customer</span><span></span><span>Yours</span><span>Reason</span></div>${rows}
         ${locked ? '' : `<div class="engctl"><span>Panels</span><div class="stepper"><button class="line" data-act="sPan" data-id="${p.id}" data-d="-1" aria-label="Remove a panel" ${d.panels <= 1 ? 'disabled' : ''}>−</button><b>${d.panels}</b><button class="line" data-act="sPan" data-id="${p.id}" data-d="1" aria-label="Add a panel" ${d.panels >= cap ? 'disabled' : ''}>+</button></div><span>Battery</span><div class="seg5">${[0, 5, 10, 15, 20].map(n => `<button class="${d.batt === n ? 'on' : ''}" data-act="sBat" data-id="${p.id}" data-n="${n}">${n ? n : 'None'}</button>`).join('')}</div><label>Usable roof (m²)<input type="number" min="5" max="120" step="1" data-site="usable" value="${s.usable}"></label></div>`}
         ${imp}${gl.text && !gl.met ? `<div class="flag warn" style="margin-top:8px">${gl.text} The customer will be told.</div>` : gl.text ? `<div class="flag ok" style="margin-top:8px">${gl.text}</div>` : ''}</div>
-      <div class="card"><h3>3. Decision</h3>${err}${locked ? '<p class="muted small">Decisions are open to the site engineer while the project is waiting on the engineer.</p>' : `<div class="decide"><button class="alt" data-act="eng" data-k="changes" data-id="${p.id}">Approve with changes</button><button class="line" data-act="eng" data-k="asis" data-id="${p.id}">Approve as the customer designed</button></div>
-        <div class="retbox"><b class="small">Return to customer</b><input data-site="retWhy" value="${esc(s.retWhy || '')}" placeholder="Reason" aria-label="Reason to return"><input data-site="retFix" value="${esc(s.retFix || '')}" placeholder="What the customer needs to fix" aria-label="What to fix"><button class="line danger" data-act="eng" data-k="return" data-id="${p.id}">Return to customer</button></div>
-        <p class="small muted" style="margin:6px 0 0">Approving with changes sends version 2 to the customer. The quotation waits until they accept it.</p>`}</div></section></div>`;
+      <div class="card"><h3>3. Proposal to the customer</h3>${err}${locked ? `<p class="muted small">${contact ? 'The proposal is sent. Waiting for the customer.' : 'Record your contact with the customer first.'}</p>` : `<div class="decide"><button class="alt" data-act="eng" data-k="propose" data-id="${p.id}">${same && custUsable(p) === s.usable ? 'Send proposal: no changes' : 'Send proposal with changes'}</button></div>
+        <p class="small muted" style="margin:8px 0 0">The customer is never asked to fix or redraw anything. You send the design you recommend, with reasons. The final quotation is made only after the customer agrees.</p>`}</div></div></section></div>`;
   }
   const rlog = (p, text, who) => log(p, text, who, 'rev');
-  function engDecide(p, k) {
+  function engDecide(p) {
     const s = siteOf(p), fail = m => { UI.engErr = { id: p.id, t: m }; render(); };
+    if (!(p.contact && p.contact.done)) return fail('Record your contact with the customer first.');
     const bad = CHECKS.filter(c => s.checks[c[0]].r !== 'pass' && !s.checks[c[0]].why.trim());
-    if (k !== 'return' && bad.length) return fail('Add a reason for: ' + bad.map(c => c[1]).join(', ') + '.');
-    const d = s.draft, same = d.panels === p.cfg.panels && d.batt === p.cfg.batt && d.mon === p.cfg.mon, anyFail = CHECKS.some(c => s.checks[c[0]].r === 'fail');
+    if (bad.length) return fail('Add a reason for: ' + bad.map(c => c[1]).join(', ') + '.');
+    const d = s.draft, same = d.panels === p.cfg.panels && d.batt === p.cfg.batt && d.mon === p.cfg.mon, areaSame = custUsable(p) === s.usable;
+    if (CHECKS.some(c => s.checks[c[0]].r === 'fail') && same && !(s.note || '').trim()) return fail('A failed check needs either a change in the design or a note saying how you will resolve it.');
+    const miss = ['panels', 'batt', 'area'].filter(x => (x === 'panels' ? p.cfg.panels !== d.panels : x === 'batt' ? p.cfg.batt !== d.batt : !areaSame) && !(s.rsn[x] || '').trim());
+    if (miss.length) return fail('Add a reason for each changed item.');
     UI.engErr = null;
-    if (k === 'asis') {
-      if (anyFail) return fail('A failed check cannot be approved as designed. Approve with changes, or return to the customer.');
-      if (!p.approvals[1].includes('engineer')) p.approvals[1].push('engineer'); if (p.rev) p.rev.status = 'accepted';
-      rlog(p, 'Site assessment done. Approved the customer’s design as it is (version ' + (p.ver || 1) + ').'); advance(p); save(); toast('Approved as designed'); render(); return;
-    }
-    if (k === 'changes') {
-      if (same && custUsable(p) === s.usable) return fail('No change yet. Change the design, or choose “Approve as the customer designed”.');
-      const miss = ['panels', 'batt', 'area'].filter(x => (x === 'panels' ? p.cfg.panels !== d.panels : x === 'batt' ? p.cfg.batt !== d.batt : custUsable(p) !== s.usable) && !(s.rsn[x] || '').trim());
-      if (miss.length) return fail('Add a reason for each changed item.');
-      const reasons = ['panels', 'batt', 'area'].filter(x => s.rsn[x]).map(x => ({ k: x, reason: s.rsn[x].trim() }));
-      D.propose(p, Object.assign({}, d), reasons, s.note, 'awaiting', userOf(S.role).n); p.rev.v1.area = custUsable(p); p.rev.v2.area = s.usable;
-      rlog(p, `Site assessment done. Proposed design version 2: ${d.panels} panels and ${d.batt ? d.batt + ' kWh battery' : 'no battery'} instead of ${p.cfg.panels} panels and ${p.cfg.batt ? p.cfg.batt + ' kWh battery' : 'no battery'}. Waiting for the customer.`); save(); toast('Version 2 sent to the customer'); render(); return;
-    }
-    if (!(s.retWhy || '').trim() || !(s.retFix || '').trim()) return fail('Returning to the customer needs a reason and what to fix.');
-    p.rev = { status: 'returned', by: userOf(S.role).n, why: s.retWhy.trim(), fix: s.retFix.trim(), v1: { cfg: Object.assign({}, p.cfg) } };
-    rlog(p, 'Returned to the customer. Reason: ' + s.retWhy.trim() + ' To fix: ' + s.retFix.trim()); save(); toast('Returned to the customer'); render();
+    const reasons = ['panels', 'batt', 'area'].filter(x => s.rsn[x]).map(x => ({ k: x, reason: s.rsn[x].trim() }));
+    D.propose(p, Object.assign({}, d), reasons, s.note, 'awaiting', userOf(S.role).n); p.rev.v1.area = custUsable(p); p.rev.v2.area = s.usable; p.rev.noChange = same && areaSame;
+    rlog(p, p.rev.noChange ? 'Sent a proposal with no changes to the customer’s design. Waiting for the customer.' : `Sent a proposal: ${d.panels} panels and ${d.batt ? d.batt + ' kWh battery' : 'no battery'} instead of ${p.cfg.panels} panels and ${p.cfg.batt ? p.cfg.batt + ' kWh battery' : 'no battery'}. Waiting for the customer.`);
+    save(); toast('Proposal sent to the customer'); render();
   }
 
   // customer view of the engineer's changes (customer project page)
   function revisionCard(p) {
-    const r = p.rev; if (!r || p.stage !== 1) return '';
-    if (r.status === 'returned') return `<div class="card revcard"><span class="chip bad">Needs your action</span><h2>Our engineer sent your design back</h2><div class="flag bad"><b class="who">Reason</b>${esc(r.why)}</div><div class="flag info"><b class="who">What to fix</b>${esc(r.fix)}</div><button class="alt" data-act="revResend" data-id="${p.id}">I fixed it. Send my design again</button></div>`;
-    if (r.status === 'asked') return `<div class="card revcard"><span class="chip warn">Waiting for the engineer</span><h2>Your question was sent</h2><p>“${esc(r.question)}”</p><p class="muted small">Our engineer will answer here.</p></div>`;
-    if (r.status === 'original') return `<div class="card revcard"><span class="chip info">Second visit needed</span><h2>You kept your original design</h2><p class="muted">Our engineer will visit again to confirm it. The quotation waits until then.</p></div>`;
-    if (r.status === 'accepted') return `<div class="card revcard"><span class="chip ok">Accepted</span><h2>You accepted the engineer's version</h2><p class="muted">Staff are now verifying the data and preparing your quotation.</p></div>`;
+    if (p.stage !== 1) return '';
+    const r = p.rev, ct = p.contact;
+    if (!r) return ct && ct.done ? `<div class="card revcard"><span class="chip ok">Your engineer contacted you</span><h2>${esc(ct.method)} on ${esc(ct.when)}</h2><p>${esc(ct.notes)}</p><p class="muted small">Next, the engineer checks the site and sends you a proposal. You only need to agree to it. You never have to redraw or fix your design.</p></div>`
+      : `<div class="card revcard"><span class="chip warn">Next: your engineer contacts you</span><h2>We received your design</h2><p class="muted">Our site engineer will call, message or visit first to talk about your goal and your roof. Then they send a proposal. The quotation is made only after you agree to it.</p></div>`;
+    if (r.status === 'asked') return `<div class="card revcard"><span class="chip warn">Waiting for the engineer</span><h2>Your question was sent</h2><p>“${esc(r.question)}”</p><p class="muted small">Our engineer will answer and, if needed, send you a new proposal. You do not need to change anything yourself.</p></div>`;
+    if (r.status === 'accepted') return `<div class="card revcard"><span class="chip ok">You agreed</span><h2>You agreed to the engineer's proposal</h2><p class="muted">Staff are now verifying the data and preparing your quotation. It will appear in step 2, Quotation.</p></div>`;
     const rows = revRows(p), f = M.roofFit(p.roof || {}, p.cfg.roof), a = r.v1.size || RZ(p, r.v1.cfg), b = r.v2.size, gc = goalCheck(p.goal, b, a.paybackNM);
     const ask = UI.ask === p.id ? `<div style="margin-top:8px"><textarea data-site="q" rows="3" placeholder="Type your question for the engineer" aria-label="Your question"></textarea><button class="alt" data-act="revSend" data-id="${p.id}" style="margin-top:6px">Send question</button></div>` : '';
-    return `<div class="card revcard"><span class="chip warn">Needs your reply</span><h2>Our engineer visited and suggests a change</h2><p class="muted" style="margin:0 0 10px">Nothing is final until you accept. Your original design stays on record.</p>
+    return `<div class="card revcard"><span class="chip warn">Needs your reply</span><h2>${r.noChange ? 'Our engineer checked your site. No changes needed' : 'Our engineer visited and suggests a change'}</h2><p class="muted" style="margin:0 0 10px">This is the engineer's proposal. Nothing is final until you agree. Your original design stays on record.</p>
       <div class="grid g2" style="align-items:start"><div><div class="cmpr h"><span>Item</span><span>Your design</span><span></span><span>Suggested</span><span>Reason</span></div>${rows.map(x => `<div class="cmpr${x.ch ? ' ch' : ''}"><b>${x.l}</b><span>${x.a}</span><span>→</span><b>${x.b}</b><span class="${x.ch ? '' : 'muted'}">${x.ch ? esc(x.why) : 'No change'}</span></div>`).join('')}
         ${gc.text ? `<div class="flag ${gc.met ? 'ok' : 'warn'}" style="margin-top:8px">${gc.text}</div>` : ''}${r.note ? `<div class="enote"><b>Note from your engineer, ${esc(r.by)}</b><p>“${esc(r.note)}”</p></div>` : ''}</div>
         <div><div class="plancard">${planSVG(f, { panels: r.v2.cfg.panels, removed: [r.v2.cfg.panels, r.v1.cfg.panels], shade: (p.roof || {}).shade, label: 'Roof plan: panels kept and panels removed' })}<p class="muted small" style="margin:4px 0 0">Dashed red outlines are panels you chose that we suggest removing.</p></div>
-        <div class="choices"><button class="alt" data-act="revAccept" data-id="${p.id}">Accept the engineer's version</button><button class="line" data-act="revAskOpen" data-id="${p.id}">Ask the engineer a question</button><button class="line" data-act="revKeep" data-id="${p.id}">Keep my original (needs a second visit)</button>${ask}</div></div></div></div>`;
+        <div class="choices"><button class="alt" data-act="revAccept" data-id="${p.id}">I agree to this proposal</button><button class="line" data-act="revAskOpen" data-id="${p.id}">I have a question or want something different</button><p class="muted small" style="margin:0">Ask, and the engineer revises the proposal for you.</p>${ask}</div></div></div></div>`;
   }
   function changeLogCard(p) {
     const l = p.log.filter(x => x.k === 'rev'); if (!l.length) return '';
@@ -602,7 +596,7 @@
 
   function myProjectView() {
     const p = P(S.myProject); if (!p) return empty('No project yet', 'Start with a free estimate and we will build your project from it.', '<a class="btn alt" href="#/estimate">Plan my solar system</a>');
-    const nxt = p.stage === 1 ? (p.rev && p.rev.status === 'awaiting' ? 'Our engineer suggests a change to your design. Please reply below. The quotation waits for your answer.' : p.rev && p.rev.status === 'returned' ? 'Our engineer needs one thing fixed before going on. See below.' : p.rev && p.rev.status === 'asked' ? 'Your question is with the engineer.' : p.rev && p.rev.status === 'original' ? 'A second site visit is being arranged.' : 'We are scheduling a site visit. An engineer will check your roof and wiring.') : p.stage === 2 ? 'Our engineer and manager are preparing your final quotation.' : p.stage === 3 ? (p.released ? 'Your quotation is ready. Review it below and accept when you are comfortable.' : 'Your quotation is approved and will be released to you shortly.') : p.stage === 6 ? 'Your system is running.' : (p.permit && !p.permit.submitted ? 'Upload the remaining documents so we can submit your permit papers.' : 'Permits and installation are moving in parallel. We will message you at each step.');
+    const nxt = p.stage === 1 ? (p.rev && p.rev.status === 'awaiting' ? 'Our engineer suggests a change to your design. Please reply below. The quotation waits for your answer.' : p.rev && p.rev.status === 'asked' ? 'Your question is with the engineer.' : p.contact && p.contact.done ? 'Your engineer is preparing a proposal for you to review.' : 'Our site engineer will contact you first, then send a proposal. The quotation comes after you agree.') : p.stage === 2 ? 'Our engineer and manager are preparing your final quotation.' : p.stage === 3 ? (p.released ? 'Your quotation is ready. Review it below and accept when you are comfortable.' : 'Your quotation is approved and will be released to you shortly.') : p.stage === 6 ? 'Your system is running.' : (p.permit && !p.permit.submitted ? 'Upload the remaining documents so we can submit your permit papers.' : 'Permits and installation are moving in parallel. We will message you at each step.');
     let h = `<div class="ph"><div><h1>Hello, ${esc(p.name.split(' ')[0])}</h1><p class="sub">${p.id} · ${esc(p.city)} · ${p.utility} · ${M.TIERS[p.tier].label} design</p></div></div>
       <div class="card dh">${tracker(p)}<p class="nextup"><b>What happens next</b>${esc(nxt)}</p></div>`;
     h += revisionCard(p);
@@ -679,11 +673,11 @@
   }
   function pipelineView() {
     const nW = S.projects.filter(isWait).length, nFlow = S.projects.filter(p => p.stage >= 4 && p.stage < 6).length, nFlag = S.projects.filter(p => flags(p).length).length;
-    const q = (UI.q || '').trim().toLowerCase(), F = { all: () => true, wait: isWait, flag: p => flags(p).length > 0, flow: p => p.stage >= 4 && p.stage < 6, cust: p => p.stage === 1 && p.rev && ['awaiting', 'returned'].includes(p.rev.status) };
+    const q = (UI.q || '').trim().toLowerCase(), F = { all: () => true, wait: isWait, flag: p => flags(p).length > 0, flow: p => p.stage >= 4 && p.stage < 6, cust: p => p.stage === 1 && p.rev && p.rev.status === 'awaiting' };
     const rows = S.projects.slice().sort((x, y) => (isWait(y) - isWait(x)) || x.stage - y.stage).filter(p => (F[UI.pf] || F.all)(p) && (!q || [p.name, p.id, p.city, p.utility].join(' ').toLowerCase().includes(q)));
     const chip = (k, l, n) => `<button class="fchip ${UI.pf === k ? 'on' : ''}" data-act="pf" data-f="${k}" aria-pressed="${UI.pf === k}">${l}<i>${n}</i></button>`;
     let h = `<div class="ph" style="margin-bottom:8px"><h1>Project pipeline</h1></div><div class="kstrip" role="list"><div role="listitem"><b>${nW}</b><span>waiting on you</span></div><div role="listitem"><b>${nFlow}</b><span>in permits or installation</span></div><div role="listitem"><b>${nFlag}</b><span>with open flags</span></div><div role="listitem"><b>${S.projects.length}</b><span>projects in total</span></div></div>
-      <div class="fbar" role="group" aria-label="Filter projects">${chip('all', 'All', S.projects.length)}${chip('wait', 'Waiting on me', nW)}${chip('flag', 'Flagged', nFlag)}${chip('cust', 'With customer', S.projects.filter(p => p.stage === 1 && p.rev && ['awaiting', 'returned'].includes(p.rev.status)).length)}${chip('flow', 'In progress', nFlow)}${q ? `<span class="muted small" style="margin-left:auto">Results for “${esc(UI.q)}” <button class="ghost" data-act="clearq">Clear</button></span>` : '<span class="muted small" style="margin-left:auto">Waiting-on-you first</span>'}</div>`;
+      <div class="fbar" role="group" aria-label="Filter projects">${chip('all', 'All', S.projects.length)}${chip('wait', 'Waiting on me', nW)}${chip('flag', 'Flagged', nFlag)}${chip('cust', 'With customer', S.projects.filter(p => p.stage === 1 && p.rev && p.rev.status === 'awaiting').length)}${chip('flow', 'In progress', nFlow)}${q ? `<span class="muted small" style="margin-left:auto">Results for “${esc(UI.q)}” <button class="ghost" data-act="clearq">Clear</button></span>` : '<span class="muted small" style="margin-left:auto">Waiting-on-you first</span>'}</div>`;
     if (!rows.length) return h + `<div class="card">${empty('No projects match', q ? 'Try a different name, city or project number.' : 'Nothing in this view right now.', '<button class="line" data-act="pf" data-f="all">Show all projects</button>')}</div>`;
     const sel = rows.find(p => p.id === UI.sel) || rows[0];
     h += `<div class="msplit"><div class="card tablecard"><table class="ptable dense"><thead><tr><th>Project</th><th>City</th><th>Design</th><th>Progress</th><th>Attention</th></tr></thead><tbody>`;
@@ -795,7 +789,7 @@
       h += `<div class="grid g2"><div class="card"><h2>How often engineers change designs ${sim_()}</h2><p class="muted small">After each site visit, the engineer approves the customer's design or proposes version 2.</p>
         <div class="grid g3"><div class="kpi"><span class="muted small">Site visits</span><div class="big">${visits}</div></div><div class="kpi"><span class="muted small">Designs changed</span><div class="big">${pct(changed / visits)}</div></div><div class="kpi"><span class="muted small">Customers who accepted</span><div class="big">${pct(accepted / decided)}</div></div></div>
         <h3 style="margin-top:14px">Why engineers change designs</h3>${hbars(why.map(x => ({ l: x[0], v: x[1] / changed, c: 'var(--amber)', t: x[1] + ' of ' + changed })))}</div>
-        <div class="card"><h2>What customers do with version 2 ${sim_()}</h2>${hbars([['Accept', accepted], ['Ask a question first', sim.asked], ['Keep their original (second visit)', sim.kept]].map(x => ({ l: x[0], v: x[1] / decided, c: x[0] === 'Accept' ? 'var(--green)' : 'var(--amber)', t: x[1] + ' of ' + decided })))}
+        <div class="card"><h2>What customers do with version 2 ${sim_()}</h2>${hbars([['Accept', accepted], ['Ask a question first', sim.asked], ['Ask for a different proposal', sim.kept]].map(x => ({ l: x[0], v: x[1] / decided, c: x[0] === 'Accept' ? 'var(--green)' : 'var(--amber)', t: x[1] + ' of ' + decided })))}
         <div class="flag info" style="margin-top:12px"><b class="who">Insight</b>Most revisions come from shading and roof size, which the customer can estimate in the app. Better shade and roof questions at the start would cut revisions, and every revision that cuts coverage below the customer's goal should come with a reason they can read.</div>
         <p class="small muted">This demo session adds ${lc} live case${lc === 1 ? '' : 's'} to the simulated portfolio.</p></div></div>`;
     }
@@ -885,13 +879,14 @@
     sPan(d) { const p = P(d.id), s = siteOf(p), cap = Math.max(1, Math.min(M.ROOF_MAX, Math.floor(s.usable / M.PANEL_AREA))); s.draft.panels = Math.max(1, Math.min(cap, s.draft.panels + (+d.d))); save(); renderView(); },
     sBat(d) { const s = siteOf(P(d.id)); s.draft.batt = +d.n; save(); renderView(); },
     photo(d) { const s = siteOf(P(d.id)); s.photos++; save(); renderView(); toast('Photo added (simulated: no real file is stored)'); },
-    eng(d) { engDecide(P(d.id), d.k); },
+    eng(d) { engDecide(P(d.id)); },
     revReply(d) { const p = P(d.id), s = siteOf(p); if (!(s.reply || '').trim()) { UI.engErr = { id: d.id, t: 'Type an answer first.' }; renderView(); return; } p.rev.status = 'awaiting'; p.rev.answer = s.reply.trim(); rlog(p, 'Answered the customer’s question: ' + s.reply.trim()); s.reply = ''; save(); toast('Answer sent'); render(); },
     revAccept(d) { const p = P(d.id), r = p.rev; p.cfg = Object.assign({}, r.v2.cfg); p.size = r.v2.size; p.indicative = r.v2.size; r.status = 'accepted'; if (!p.approvals[1].includes('engineer')) p.approvals[1].push('engineer'); rlog(p, 'Accepted the engineer’s version 2. The quotation will be prepared from it.', 'Customer'); advance(p); save(); toast('Version 2 accepted'); render(); },
     revAskOpen(d) { UI.ask = UI.ask === d.id ? null : d.id; render(); },
     revSend(d) { const p = P(d.id), el = $('[data-site=q]'), q = el ? el.value.trim() : ''; if (!q) { toast('Type your question first'); return; } p.rev.status = 'asked'; p.rev.question = q; UI.ask = null; rlog(p, 'Asked the engineer: ' + q, 'Customer'); save(); toast('Question sent'); render(); },
-    revKeep(d) { const p = P(d.id); p.rev.status = 'original'; p.rev.second = true; rlog(p, 'Chose to keep the original design (version 1). A second site visit is needed.', 'Customer'); save(); toast('We will arrange a second visit'); render(); },
-    revResend(d) { const p = P(d.id); p.rev = null; rlog(p, 'Fixed the issue and sent the design again.', 'Customer'); save(); toast('Sent back to the engineer'); render(); },
+    contact(d) { const p = P(d.id), s = siteOf(p); if (!(s.cnotes || '').trim()) { UI.engErr = { id: d.id, t: 'Write what was discussed and agreed.' }; renderView(); return; } p.contact = { done: true, method: s.cmethod || 'Phone call', when: s.cwhen || new Date().toISOString().slice(0, 10), notes: s.cnotes.trim(), by: userOf(S.role).n }; UI.engErr = null; rlog(p, `Contacted the customer (${p.contact.method}, ${p.contact.when}): ${p.contact.notes}`); save(); toast('Contact recorded'); render(); },
+    revKeepOld(d) { const p = P(d.id); p.rev.status = 'original'; p.rev.second = true; rlog(p, 'Chose to keep the original design (version 1). A second site visit is needed.', 'Customer'); save(); toast('We will arrange a second visit'); render(); },
+    revResendOld(d) { const p = P(d.id); p.rev = null; rlog(p, 'Fixed the issue and sent the design again.', 'Customer'); save(); toast('Sent back to the engineer'); render(); },
     pan(d) { const E = UI.est; E.cfg.panels = Math.max(1, Math.min(capOf(E), E.cfg.panels + (+d.d))); if (+d.d > 0) E.pop = { t: 'p', i: E.cfg.panels - 1 }; redrawDesigner(); },
     slot(d) { const E = UI.est, i = +d.i; E.cfg.panels = (i === E.cfg.panels - 1 && i > 0) ? i : i + 1; if (E.cfg.panels > 0 && i >= E.cfg.panels - 1) E.pop = { t: 'p', i }; redrawDesigner(); },
     bat(d) { const E = UI.est; E.cfg.batt = Math.max(0, Math.min(M.BATT_STEP * M.BATT_MAX, E.cfg.batt + (+d.d) * M.BATT_STEP)); if (+d.d > 0) E.pop = { t: 'b', i: E.cfg.batt / M.BATT_STEP - 1 }; redrawDesigner(); },

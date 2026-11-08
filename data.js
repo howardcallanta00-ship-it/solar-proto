@@ -108,13 +108,12 @@
     p = mk({ id: 'P-1009', name: 'Tan Residence', city: 'Quezon City', utility: 'Meralco', tier: 'value', kwh: 520, dayShare: 0.35, stage: 1, appKwh: 480, roof, goal: g, cfg: { panels: 8, batt: 5, mon: false, roof: 'flat', yf: 0.85 } });
     propose(p, { panels: 6, batt: 5, mon: false, roof: 'flat', yf: 0.85 }, [{ k: 'panels', reason: 'Part of the roof is in shade after 2 pm, so two panels there would make little power.' }, { k: 'area', reason: 'Measured on site: 27 m² usable, not 30 m².' }], 'If you want to stay near 80%, we could trim the trees on the west side. Then all eight panels would work. I can re-check after.', 'awaiting', 'A. Ramos');
     p.rev.v1.area = 30; p.rev.v2.area = 27;
-    p.log.push({ t: 'Site assessment done. Proposed design version 2: 6 panels and 5 kWh battery instead of 8 panels and 5 kWh battery. Waiting for the customer.', who: 'A. Ramos', at: Date.now() - 86400000, k: 'rev' });
+    p.contact = { done: true, method: 'Meeting at the site', when: '2026-11-07', notes: 'Walked the roof with the owner and confirmed the 80% goal.', by: 'A. Ramos' };
+    p.log.push({ t: 'Contacted the customer (Meeting at the site, 2026-11-07): walked the roof with the owner and confirmed the 80% goal.', who: 'A. Ramos', at: Date.now() - 2 * 86400000, k: 'rev' });
+    p.log.push({ t: 'Sent a proposal: 6 panels and 5 kWh battery instead of 8 panels and 5 kWh battery. Waiting for the customer.', who: 'A. Ramos', at: Date.now() - 86400000, k: 'rev' });
     p.site = { checks: { roof: { r: 'pass', why: '' }, area: { r: 'adjust', why: 'Measured 36 m², 27 m² usable' }, shade: { r: 'adjust', why: 'West side shaded after 2 pm by the neighbour’s wall' }, elec: { r: 'pass', why: '' }, batt: { r: 'pass', why: '' }, util: { r: 'pass', why: '' } }, usable: 27, photos: 4, note: '' };
     P.push(p);
     p = mk({ id: 'P-1010', name: 'Ocampo Residence', city: 'Marikina', utility: 'Meralco', tier: 'value', kwh: 430, dayShare: 0.33, stage: 1, appKwh: 400, roof: Object.assign({}, roof, { shade: 'none' }), goal: { type: 'budget', amount: 300000 } });
-    p.rev = { status: 'returned', by: 'A. Ramos', why: 'The electrical panel has no free breaker space for the solar circuit.', fix: 'Ask your electrician to add a breaker slot, then send your design again.', v1: { cfg: p.cfg } };
-    p.log.push({ t: 'Returned to the customer. Reason: ' + p.rev.why + ' To fix: ' + p.rev.fix, who: 'A. Ramos', at: Date.now() - 2 * 86400000, k: 'rev' });
-    p.site = { checks: { roof: { r: 'pass', why: '' }, area: { r: 'pass', why: '' }, shade: { r: 'pass', why: '' }, elec: { r: 'fail', why: 'No free breaker space' }, batt: { r: 'pass', why: '' }, util: { r: 'pass', why: '' } }, usable: 30, photos: 3, note: '' };
     P.push(p);
     return P;
   }
